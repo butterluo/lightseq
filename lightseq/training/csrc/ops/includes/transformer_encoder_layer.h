@@ -134,7 +134,7 @@ class TransformerEncoderLayer {
     size_t sz_ffn_bw = 3 * _max_batch_tokens * _hidden_size +
                        _max_batch_tokens * _intermediate_size;
     // buffer size needed by attn bw
-    size_t sz_attn_bw = 5 * _max_batch_tokens * _hidden_size +
+    size_t sz_attn_bw = 5 * _max_batch_tokens * _hidden_size + //btbt ??? 这个5,和上面那个3是啥?为何这样设置?3代表Q,K,V?那5呢?
                         std::max(3 * _max_batch_tokens * _hidden_size,
                                  _max_batch_tokens * _heads * _max_seq_len);
     size_t smem_size = std::max(sz_ffn_bw, sz_attn_bw);

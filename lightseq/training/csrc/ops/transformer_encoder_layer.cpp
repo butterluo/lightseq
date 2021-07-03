@@ -137,10 +137,10 @@ void TransformerEncoderLayer<T>::Forward(const T *input_ptr,
                                          const T *input_mask_ptr, T *out_ptr) {
   _stream = Context::Instance().get_stream();
   _cublasHandle = Context::Instance().get_cublashandle();
-  T *attn_buffer = _shared_mem_ptr;  // 3 * _batch_dim
+  T *attn_buffer = _shared_mem_ptr;  // 3 * _batch_dim //btbt ??? _shared_mem_ptr 在allocate_mem_buffer()中为何要如此设置?仅给atten做内存么?怎么感觉也给ffn做内存了?
   // _batch_dim
   T *ffn_inp_ptr =
-      _pre_or_postLayerNorm ? _shared_mem_ptr + 3 * _batch_dim : _ff1_inp_ptr;
+      _pre_or_postLayerNorm ? _shared_mem_ptr + 3 * _batch_dim : _ff1_inp_ptr; //btbt ??? _pre_or_postLayerNorm为true时为pre layerNorm,但为何要酱紫?pre LN的话之前malloc的_ff1_inp_ptr内存就用不上了?
 
   attn_layer_fw(input_ptr, input_mask_ptr, ffn_inp_ptr, attn_buffer);
 

@@ -60,7 +60,7 @@ std::vector<torch::Tensor> transformer_encoder_layer_fw(
   std::shared_ptr<TransformerEncoderLayer<T>> layer =
       std::static_pointer_cast<TransformerEncoderLayer<T>>(
           s_transformer_encoder_layers[layer_id]);
-  layer->set_cur_batch_shape(input.size(0), input.size(1));
+  layer->set_cur_batch_shape(input.size(0), input.size(1)); //BTBT ??? 和下面这行,一些参数不需要每次forward都设置吧? 那些batch相关的参数是每次forward不一样的?但input的sharp应该不会变吧,因为一开始就设好batch size和max seq len,即使seq小于max seq len也会pad上的阿
   layer->SetTrainingMode(training_mode);
   layer->Forward(input_ptr, input_mask_ptr, out_ptr);
 

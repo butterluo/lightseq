@@ -219,7 +219,7 @@ class LSTransformerEncoderLayer(nn.Module):
         nn.init.zeros_(self._get_weights(11))
 
     def __assign_layer_weight_grad(self):
-        if self.config.layer_id in _all_layer_grads:
+        if self.config.layer_id in _all_layer_grads: #btbt 初次进来会把flatten后的参数传给cpp layer
             return
         grad = torch.empty_like(self.para.data)
         cuda_module = transformer_cuda_module
