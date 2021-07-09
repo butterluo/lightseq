@@ -248,8 +248,8 @@ class LSTransformerEncoderLayer(nn.Module):
                 f"Sequence length {sl} exceeds the limit {self.config.max_seq_len}."
             )
         output = LSTransformerEncoderFunc.apply(
-            hidden_states,
-            encoder_padding_mask,
+            hidden_states, #btbt ???shape[batch size, seq_len, ???]是啥?
+            encoder_padding_mask,#btbt ??? encoder_padding_mask此时的shape
             self.para,
             self.config,
         )

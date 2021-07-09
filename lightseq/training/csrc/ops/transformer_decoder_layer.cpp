@@ -41,7 +41,7 @@ TransformerDecoderLayer<T>::TransformerDecoderLayer(
       _encdec_q_linear(
           typename FeedForward<T>::Config(hidden_size, hidden_size)),
       _encdec_kv_linear(
-          typename FeedForward<T>::Config(2 * hidden_size, hidden_size)),
+          typename FeedForward<T>::Config(2 * hidden_size, hidden_size)),//btbt ??? outputSz=hidSz*2为何?
       _encdec_attn_scores(typename StridedBatchGemm<T>::Config(
           (T(1.0) / T(sqrt(_hidden_size / _heads))), T(0.0), CUBLAS_OP_T,
           CUBLAS_OP_N)),
@@ -68,7 +68,7 @@ TransformerDecoderLayer<T>::TransformerDecoderLayer(
                    _max_batch_tokens * _hidden_size) {
   assert(_hidden_size % _heads == 0);
   allocate_buffer();
-  _shared_nlayer += 1;
+  _shared_nlayer += 1;//btbt ??? 这是预先计算该transf有多少层layer,好一开始就malloc好这么多内存么?为何encoder没这样做?
 }
 
 template <typename T>
@@ -80,7 +80,7 @@ TransformerDecoderLayer<T>::~TransformerDecoderLayer() {
 template <typename T>
 void TransformerDecoderLayer<T>::self_attn_layer_fw(const T *input_ptr,
                                                     T *output_ptr, T *buffer,
-                                                    std::vector<T *> &cache) {
+                                                    std::vector<T *> &cache) {//参考transformer_encoder_layer.cpp的attn_layer_fw()
   // size of buffer: [batch_size, trg_seq_len, hidden_size]
   T *q_tf_ptr = _qkv_ptr;
   T *k_tf_ptr = q_tf_ptr + _batch_dim;
@@ -139,14 +139,14 @@ void TransformerDecoderLayer<T>::self_attn_layer_fw(const T *input_ptr,
   }
 }
 
-template <typename T>
+template <typename T> //OUTPUT=>_shared_encdec_kv_ptr[n_dec_layer * 2, batch_size, nhead, src_seq_len, head_dim],由enc_output_ptr通过FFN映射到_shared_grad_encdec_kv_ptr[batch_size, src_seq_len, n_dec_layer * 2, hidden_size]并转维度而得到
 void TransformerDecoderLayer<T>::encdec_kv_fw(const T *enc_output_ptr) {
   allocate_encdec_kv_memory();
-  _encdec_kv_linear.Forward(_batch_size * _src_seq_len, enc_output_ptr,
+  _encdec_kv_linear.Forward(_batch_size * _src_seq_len, enc_output_ptr,//BTBT [MAYBUG]??? 本来是每层都要分别通过FFN转成各自的KV的,现在一下子所有层都做了,所有层混在一起,会不会有问题?都算法效果有影响么?
                             _encdec_attn_kvw_ptr, _shared_grad_encdec_kv_ptr,
-                            _cublasHandle);
-  // [batch_size, src_seq_len, n_dec_layer * 2, hidden_size] ->
-  // [n_dec_layer * 2, batch_size, nhead, src_seq_len, head_dim]
+                            _cublasHandle);//把enc_output_ptr的每个tkn的hidSz扩大到'_shared_nlayer * 2 * _hidden_size',用于每层encdec_attn_layer_fw()的计算,每个_shared_nlayer包含K,V两种值,所以要*2
+  //in=_shared_grad_encdec_kv_ptr [batch_size, src_seq_len, n_dec_layer * 2, hidden_size] --->
+  //out=_shared_infer_encdec_kv_ptr/_shared_encdec_kv_ptr [n_dec_layer * 2, batch_size, nhead, src_seq_len, head_dim]
   launch_bias_add_transform_20314<T>(
       _predict ? _shared_infer_encdec_kv_ptr : _shared_encdec_kv_ptr,
       _shared_grad_encdec_kv_ptr, _encdec_attn_kvb_ptr, _batch_size,
@@ -177,7 +177,7 @@ void TransformerDecoderLayer<T>::encdec_attn_layer_fw(const T *input_ptr,
     _encdec_attn_ln.Forward(_gemmQ_inp_ptr, input_ptr, _encdec_attn_nw_ptr,
                             _encdec_attn_nb_ptr, _batch_tokens, _stream);
   }
-  _encdec_q_linear.Forward(_batch_tokens, _gemmQ_inp_ptr, _encdec_attn_qw_ptr,
+  _encdec_q_linear.Forward(_batch_tokens, _gemmQ_inp_ptr, _encdec_attn_qw_ptr,//在postLN的情况下_gemmQ_inp_ptr和input_ptr指向同一块内存,见Forward()
                            buffer, _cublasHandle);
   // query: [batch_size, trg_seq_len, hidden_size] ->
   // [batch_size, nhead, trg_seq_len, head_dim]
@@ -190,12 +190,12 @@ void TransformerDecoderLayer<T>::encdec_attn_layer_fw(const T *input_ptr,
   const T *encdec_kv_ptr =
       _predict ? _shared_infer_encdec_kv_ptr : _shared_encdec_kv_ptr;
   const T *encdec_k_ptr =
-      encdec_kv_ptr + _layer_id * 2 * _batch_size * _src_seq_len * _hidden_size;
+      encdec_kv_ptr + _layer_id * 2 * _batch_size * _src_seq_len * _hidden_size;//_layer_id * 2 用于指向该_layer_id层的encoder K值在_shared_encdec_kv_ptr中的起始点,因为K和V并且K在前,所以是*2
   // score: [batch_size, nhead, trg_seq_len, src_seq_len]
   _encdec_attn_scores.Forward(_batch_heads, _encdec_soft_out_ptr, encdec_k_ptr,
                               _encdec_q_ptr, _cublasHandle);
 
-  // Softmax + Mask
+  // Softmax + Mask //ker_attn_softmax()内是先mask再做softmax的
   _encdec_softmax.Forward(_encdec_soft_out_ptr, enc_mask_ptr, _batch_size,
                           _trg_seq_len, _src_seq_len, _stream);
 
@@ -207,7 +207,7 @@ void TransformerDecoderLayer<T>::encdec_attn_layer_fw(const T *input_ptr,
   // attention context, score * v
   // value: [batch_size, nhead, src_seq_len, head_dim]
   const T *encdec_v_ptr = encdec_kv_ptr + (_layer_id * 2 + 1) * _batch_size *
-                                              _src_seq_len * _hidden_size;
+                                              _src_seq_len * _hidden_size; //'_layer_id * 2 + 1' 用于指向该_layer_id层的encoder V值在_shared_encdec_kv_ptr中的起始点,因为K和V并且V在后,所以要*2+1
   _encdec_attn_context.Forward(_batch_heads, buffer, encdec_v_ptr,
                                _encdec_attn_score_ptr, _cublasHandle);
 
@@ -231,7 +231,7 @@ void TransformerDecoderLayer<T>::encdec_attn_layer_fw(const T *input_ptr,
 }
 
 template <typename T>
-void TransformerDecoderLayer<T>::ffn_layer_fw(T *inp_ptr, T *out_ptr) {
+void TransformerDecoderLayer<T>::ffn_layer_fw(T *inp_ptr, T *out_ptr) {//参考 transformer_encoder_layer.cpp 的 ffn_layer_fw()
   // save _ff1_inp_ptr, _relu_inp_ptr, _ff2_inp_ptr for backward
   if (_pre_or_postLayerNorm) {
     _ffn_ln.Forward(_ff1_inp_ptr, inp_ptr, _ffn_nw_ptr, _ffn_nb_ptr,
@@ -276,7 +276,7 @@ void TransformerDecoderLayer<T>::Forward(const T *dec_input_ptr,
   T *buffer = _shared_buffer_ptr;  // 3 * _batch_dim
   // _batch_dim
   T *encdec_attn_inp_ptr =
-      _pre_or_postLayerNorm ? buffer + 3 * _batch_dim : _gemmQ_inp_ptr;
+      _pre_or_postLayerNorm ? buffer + 3 * _batch_dim : _gemmQ_inp_ptr;//btbt [REFACTOR]??? preLN即_pre_or_postLayerNorm=true时貌似用不着buffer也就是_shared_buffer_ptr的内存那么大?但还是分配了这么大?
   // _batch_dim
   T *ffn_inp_ptr =
       _pre_or_postLayerNorm ? buffer + 4 * _batch_dim : _ff1_inp_ptr;
@@ -296,7 +296,7 @@ void TransformerDecoderLayer<T>::self_attn_layer_bw(const T *input_ptr,
                                                     const T *output_ptr,
                                                     const T *grad_output_ptr,
                                                     T *grad_input_ptr,
-                                                    T *buffer) {
+                                                    T *buffer) {//参考 transformer_encoder_layer.cpp 
   cudaStream_t streams[2] = {_stream, _stream};
   const T *q_tf_ptr = _qkv_ptr;
   const T *k_tf_ptr = q_tf_ptr + _batch_dim;
@@ -467,7 +467,7 @@ void TransformerDecoderLayer<T>::encdec_attn_layer_bw(const T *output_ptr,
 template <typename T>
 void TransformerDecoderLayer<T>::ffn_layer_bw(const T *grad_output_ptr,
                                               const T *output_ptr,
-                                              T *grad_inp_ptr, T *buffer) {
+                                              T *grad_inp_ptr, T *buffer) {//参考 transformer_encoder_layer.cpp 
   cudaStream_t streams[2] = {_stream, _stream};
 
   T *grad_residual_ptr = buffer;
@@ -562,9 +562,9 @@ void TransformerDecoderLayer<T>::Backward(
 
 template <typename T>
 size_t TransformerDecoderLayer<T>::_shared_nlayer = 0;
-template <typename T>
-T *TransformerDecoderLayer<T>::_shared_buffer_ptr = nullptr;
-template <typename T>
+template <typename T>//可容纳ffn和attn计算的buffer内存,是两者所需内存中的最大值
+T *TransformerDecoderLayer<T>::_shared_buffer_ptr = nullptr;//BTBT ??? 没搞懂 allocate_buffer()给 _shared_buffer_ptr 分配内存大小为何要如此计算
+template <typename T>//跨层共享的显存块,在encdec_kv_fw()中由通过FFN后再转置成该指针[n_dec_layer * 2, batch_size, nhead, src_seq_len, head_dim],2是指每层layer包含了K和V,K在前
 T *TransformerDecoderLayer<T>::_shared_encdec_kv_ptr = nullptr;
 template <typename T>
 T *TransformerDecoderLayer<T>::_shared_grad_encdec_kv_ptr = nullptr;

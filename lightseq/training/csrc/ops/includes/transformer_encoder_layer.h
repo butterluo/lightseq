@@ -123,7 +123,7 @@ class TransformerEncoderLayer {
       _gemmQKV_inp_ptr = nullptr;
     }
     _qkv_ptr = cuda_malloc<T>(_max_batch_tokens * _hidden_size * 3);
-    _soft_out_ptr = cuda_malloc<T>(_max_batch_tokens * _heads * _max_seq_len);
+    _soft_out_ptr = cuda_malloc<T>(_max_batch_tokens * _heads * _max_seq_len);//btbt ??? _max_batch_tokens * _heads * _max_seq_len 为何仍如此?
     _ctx_bufB_ptr = cuda_malloc<T>(_max_batch_tokens * _heads * _max_seq_len);
     _attn_o_inp_ptr = cuda_malloc<T>(_max_batch_tokens * _hidden_size);
     _ff1_inp_ptr = cuda_malloc<T>(_max_batch_tokens * _hidden_size);

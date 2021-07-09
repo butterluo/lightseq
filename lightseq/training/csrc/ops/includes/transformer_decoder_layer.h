@@ -244,7 +244,7 @@ class TransformerDecoderLayer {
     if (_shared_encdec_kv_ptr) {
       return;
     }
-    size_t smem_size = _shared_nlayer * _max_batch_tokens * _hidden_size * 2;
+    size_t smem_size = _shared_nlayer * _max_batch_tokens * _hidden_size * 2;//btbt ??? 为何*2,是因为_encdec_kv_linear的output_sz=hidSz*2么?
     _shared_encdec_kv_ptr = cuda_malloc<T>(smem_size);
     _shared_grad_encdec_kv_ptr = cuda_malloc<T>(smem_size);
     _encdec_kv_linear.reset_size(_shared_nlayer * 2 * _hidden_size,
@@ -290,9 +290,9 @@ class TransformerDecoderLayer {
   const bool _pre_or_postLayerNorm;
   // dynamic parameter between batch
   size_t _batch_size;
-  size_t _trg_seq_len;
-  size_t _src_seq_len;
-  size_t _batch_tokens;
+  size_t _trg_seq_len;//decoder的输入(是另外的embedTkn,与encoder输出的shape一般不同)的seqLen,
+  size_t _src_seq_len;//encoder输出的seqLen
+  size_t _batch_tokens;//按decoder输入的seqLen计算的每个batch的tkn数
   size_t _batch_heads;
   size_t _batch_dim;
   int _step;
@@ -313,19 +313,19 @@ class TransformerDecoderLayer {
       _encdec_attn_context;
 
   // layer's local GPU memory
-  T *_gemmQKV_inp_ptr;
-  T *_qkv_ptr;
+  T *_gemmQKV_inp_ptr;// if preLN {[_max_batch_tokens * _hidden_size]} else nullptr
+  T *_qkv_ptr;//[_max_batch_tokens * _hidden_size * 3]
   T *_soft_out_ptr;
   T *_attn_score_ptr;
   T *_attn_output_ptr;
 
-  T *_gemmQ_inp_ptr;
+  T *_gemmQ_inp_ptr;//[_max_batch_tokens * _hidden_size]
   T *_encdec_q_ptr;
   T *_encdec_soft_out_ptr;
   T *_encdec_attn_score_ptr;
   T *_encdec_attn_output_ptr;
 
-  T *_ff1_inp_ptr;
+  T *_ff1_inp_ptr;//[_max_batch_tokens * _hidden_size]
   T *_relu_inp_ptr;
   T *_ff2_inp_ptr;
 
@@ -344,7 +344,7 @@ class TransformerDecoderLayer {
   const T *_attn_nw_ptr;
   const T *_attn_nb_ptr;
 
-  const T *_encdec_attn_qw_ptr;
+  const T *_encdec_attn_qw_ptr;//[_hidden_size * _hidden_size]
   const T *_encdec_attn_qb_ptr;
   const T *_encdec_attn_ow_ptr;
   const T *_encdec_attn_ob_ptr;

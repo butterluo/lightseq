@@ -182,9 +182,9 @@ __global__ void ker_ln_bw_dgamma_dbetta(T *gamma_grad, T *betta_grad,
   cg::thread_block b = cg::this_thread_block();
   cg::thread_block_tile<TILE_DIM> g = cg::tiled_partition<TILE_DIM>(b);
 
-  int idx = blockDim.x * blockIdx.x + threadIdx.x;
-  int offset = threadIdx.y * width + idx;
-  int y_stride = width * TILE_DIM;
+  int idx = blockDim.x * blockIdx.x + threadIdx.x;//idx控制取hid_sz的第几位进行计算,而这是由blockIdx.x和threadIdx.x共同控制的
+  int offset = threadIdx.y * width + idx;//threadIdx.y控制取第几个sample进行计算,offset就是对第几个sample的hid_sz的第几位进行计算
+  int y_stride = width * TILE_DIM;//y_stride是指下面的for循环每轮会取下TILE_DIM个样本进行计算
 
   // Loop across inp height
   float dbetta = 0;
@@ -192,7 +192,7 @@ __global__ void ker_ln_bw_dgamma_dbetta(T *gamma_grad, T *betta_grad,
   float dout, val;
   if (means == nullptr) {
     float vbetta = (float)betta[idx];
-    float vgamma = (float)gamma[idx];
+    float vgamma = (float)gamma[idx];//该thread只计算特定的idx位,但是会在下面的for中取batch_sz/TILE_DIM个sample各自的hid_sz的第idx位出来计算
     for (int r = threadIdx.y; r < rows; r += TILE_DIM) {
       dout = (float)out_grad[offset];
       // inp_or_out is output
@@ -213,11 +213,11 @@ __global__ void ker_ln_bw_dgamma_dbetta(T *gamma_grad, T *betta_grad,
     }
   }
 
-  // Sum the shared buffer.
-  betta_buffer[threadIdx.x][threadIdx.y] = dbetta;
-  gamma_buffer[threadIdx.x][threadIdx.y] = dgamma;
+  // Sum the shared buffer.//btbt ???
+  betta_buffer[threadIdx.x][threadIdx.y] = dbetta;//这里是threadIdx.x所负责的哪个hid_sz位上的对应的trheadIdx.y所负责的那批sample的beta的导数汇总计算,上面左的都是这些事儿
+  gamma_buffer[threadIdx.x][threadIdx.y] = dgamma;//类似上行
   __syncthreads();
-  float s1 = betta_buffer[threadIdx.y][threadIdx.x];
+  float s1 = betta_buffer[threadIdx.y][threadIdx.x];//BTBT ??? 然后这里又拿出了threadIdx.y所负责的哪个hid_sz位上的对应的trheadIdx.x所负责的那批sample的beta的导数s1,然后求和?为啥不用原来threadIdx.x/y的用法求和?
   float s2 = gamma_buffer[threadIdx.y][threadIdx.x];
   __syncthreads();
 
@@ -238,7 +238,7 @@ __global__ void ker_ln_bw_dgamma_dbetta(T *gamma_grad, T *betta_grad,
 Layer norm backword kernel, compute the gradient of input.
 dinp = (dxhat - (sum(dxhat) + xhat * sum(dxhat * xhat)) / hidden_dim)
   * rsqrt(var)
-xhat = (input - mean) * rsqrt(var) if mean is not nullptr
+xhat = (input - mean) * rsqrt(var) if mean is not nullptr //btbt ??? xhat是啥?
        (output - betta) / gamma if mean is nullptr
 dxhat = dout * gamma
 
@@ -248,8 +248,8 @@ gridDim.x = batch_size * seq_len
 blockDim.x = hidden_size
 
 @param
-inp_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
-out_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
+inp_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output //fw时LN的输入的导数
+out_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output //倒数上一级fw时的输入求导得到的结果
 residual_grad: [batch_size * seq_len, hidden_size], gradient of residual input,
   usually appear in pre-layer-norm for transformer layer, maybe nullptr
 inp_or_out: [batch_size * seq_len, hidden_size], ln output if means is nullptr

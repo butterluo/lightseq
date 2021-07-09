@@ -43,7 +43,7 @@ class FeedForward {
                 const T *weights, T *weights_grad, T *bias_grad,
                 cublasHandle_t &_cublasHandle, cudaStream_t &stream,
                 T *inp_grad_out = nullptr, T *out_grad_trans_out = nullptr,
-                bool compute_bias = true) {
+                bool compute_bias = true) {//BTBT 参考 https://zhuanlan.zhihu.com/p/24709748 
     float alpha = (T)1.0, beta = (T)0.0;
     cublas_gemm_ex(_cublasHandle, CUBLAS_OP_N, CUBLAS_OP_T, config_.inputSize,
                    config_.outputSize, bsz, &alpha, &beta, input_ptr, out_grad,

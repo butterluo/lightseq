@@ -84,7 +84,7 @@ class LSTransformerEmbeddingLayer(nn.Module):
             self.embeddings = torch.nn.Parameter(
                 torch.empty_like(initial_embeddings).copy_(initial_embeddings)
             )
-        self.pos_embeddings = self.get_pos_embedding(self.config.max_seq_len).to(
+        self.pos_embeddings = self.get_pos_embedding(self.config.max_seq_len).to( #btbt [REFACTOR] 这里只支持sin/cos的pos embed, 更需要leaernable的pos embed
             self.config.local_rank
         )
         if self.config.fp16:

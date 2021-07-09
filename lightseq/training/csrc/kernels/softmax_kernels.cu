@@ -1,7 +1,7 @@
 #include <math.h>
 
 #include <cub/block/block_load.cuh>
-#include <cub/cub.cuh>
+#include <cub/cub.cuh>//btbt https://nvlabs.github.io/cub/index.html
 
 #include "block_reduce.h"
 #include "kernels.h"
@@ -32,44 +32,44 @@ attn_mask: [batch_size, to_len], padding tokens are -inf,
 */
 template <typename T, int block_dim, int ele_per_thread>
 __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
-                                 int to_len, bool mask_future) {
+                                 int to_len, bool mask_future) {//btbt ??? 这里Q的seq_len为from_len,K的为to_len,可以设为不同,是为了兼容cross attn?
   int batch_id = blockIdx.y;
   int head_id = blockIdx.z;
   const int nhead = gridDim.z;
   const int token_per_reduce = 1;
-  typedef cub::BlockLoad<T, block_dim, ele_per_thread,
+  typedef cub::BlockLoad<T, block_dim, ele_per_thread,//btbt https://nvlabs.github.io/cub/classcub_1_1_block_load.html
                          cub::BLOCK_LOAD_VECTORIZE>
       BlockLoad;
   __shared__ typename BlockLoad::TempStorage ts_load;
-  typedef cub::BlockStore<T, block_dim, ele_per_thread,
+  typedef cub::BlockStore<T, block_dim, ele_per_thread,//https://nvlabs.github.io/cub/classcub_1_1_block_store.html
                           cub::BLOCK_STORE_VECTORIZE>
       BlockStore;
   __shared__ typename BlockStore::TempStorage ts_store;
 
   T mval[ele_per_thread];
   if (attn_mask) {
-    attn_mask += batch_id * to_len;
+    attn_mask += batch_id * to_len;//btbt attn_mask指向的值为const但指针可移动,现移动到该sample的token起始位置(不用headId是因为每个头的mask都一样)
     BlockLoad(ts_load).Load(attn_mask, mval, to_len, REDUCE_FLOAT_INF_NEG);
   }
 
-  inp += flat_3dim(batch_id, head_id, 0, nhead, from_len * to_len);
-  for (int token_id = blockIdx.x * token_per_reduce; token_id < from_len;
-       token_id += gridDim.x * token_per_reduce) {
+  inp += flat_3dim(batch_id, head_id, 0, nhead, from_len * to_len);//指针移动到该sample该头的token起始位置
+  for (int token_id = blockIdx.x * token_per_reduce; token_id < from_len;//gridDim.x控制Q的from_len上token的循环,每次取token_per_reduce个token与K的to_len个token计算得到的attn score做softmax计算,下一轮又取相隔gridDim.x * token_per_reduce的下一个token进行计算,用于token多而一个grid计算不完的情况
+       token_id += gridDim.x * token_per_reduce) {//这样在from_len=512,gridDim.x=64,token_per_reduce=1的情况下相当于每个thread计算Q的from_len=512个token中的8个,每个block有256个thrad处理一个Qtoken的softmax,每个thread处理该Qtkn对应的2个K token的attn score求和,最终汇总到block对应的QK的softmax值
     T inp_val[token_per_reduce][ele_per_thread];
     for (int i = 0; i < token_per_reduce && (token_id + i) < from_len; i++) {
-      BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,
+      BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,//btbt inp指针移动到第token_id个token的attn score起始位置
                               REDUCE_FLOAT_INF_NEG);
     }
 
     /* step 1. compute max */
     // thread local max
     float val[token_per_reduce][ele_per_thread];
-    float l_max[token_per_reduce];
+    float l_max[token_per_reduce];//btbt ??? 该thread的每个reduce的最大值?
     for (int i = 0; i < token_per_reduce; i++) {
       l_max[i] = REDUCE_FLOAT_INF_NEG;
       for (int j = 0; j < ele_per_thread; j++) {
         if (attn_mask) {
-          val[i][j] = (float)inp_val[i][j] + (float)mval[j];
+          val[i][j] = (float)inp_val[i][j] + (float)mval[j];//加上mask
         } else {
           if (mask_future && ele_per_thread * threadIdx.x + j > token_id + i) {
             val[i][j] = REDUCE_FLOAT_INF_NEG;
@@ -80,34 +80,34 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
         l_max[i] = fmaxf(l_max[i], val[i][j]);
       }
     }
-    // block reduce max
-    blockReduce<ReduceType::kMax, token_per_reduce>(l_max);
+    // block reduce max //btbt [maybug]???l_max不是数组么,这种传参只适合token_per_reduce=1的情况吧?还是都可以?
+    blockReduce<ReduceType::kMax, token_per_reduce>(l_max);//btbt 该block的每个thread传入本地最大值l_max,然后'blockReduce<ReduceType::kMax'计算出block的最大值保存在l_max中
     // write shared
-    __shared__ float s_max[token_per_reduce];
+    __shared__ float s_max[token_per_reduce];//共享内存s_max保存该block的最大值
     if (threadIdx.x == 0) {
       for (int i = 0; i < token_per_reduce; i++) {
         s_max[i] = l_max[i];
       }
     }
-    __syncthreads();
+    __syncthreads();//btbt [REFACTOR] __syncthreads有点多,blockReduce里面也还有,这样会影响性能
 
     /* step 2. compute sum */
     // thread local sum
     float l_sum[token_per_reduce];
     for (int i = 0; i < token_per_reduce; i++) {
       l_sum[i] = 0.f;
-      for (int j = 0; j < ele_per_thread; j++) {
+      for (int j = 0; j < ele_per_thread; j++) {//block的每个thread基于block最大值归一化各自负责的val,然后对这些val求和(thread local sum)
         val[i][j] = __expf(val[i][j] - s_max[i]);
         l_sum[i] += val[i][j];
       }
     }
     // block reduce sum
-    blockReduce<ReduceType::kSum, token_per_reduce>(l_sum);
+    blockReduce<ReduceType::kSum, token_per_reduce>(l_sum);//对整个block的所有thread的l_sum进行求和,block和放在l_sum中. 这种处理方式 //btbt [REFACTOR]???这种自己写的方式会比cub::BlockReduce快?
     // write shared
     __shared__ float s_sum[token_per_reduce];
     if (threadIdx.x == 0) {
       for (int i = 0; i < token_per_reduce; i++) {
-        s_sum[i] = __fdividef(1.0f, l_sum[i] + EPSILON);
+        s_sum[i] = __fdividef(1.0f, l_sum[i] + EPSILON);//求blck的和l_sum的倒数
       }
     }
     __syncthreads();
@@ -115,9 +115,9 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
     /* step 3. compute final result */
     for (int i = 0; i < token_per_reduce && (token_id + i) < from_len; i++) {
       for (int j = 0; j < ele_per_thread; j++) {
-        inp_val[i][j] = (T)(val[i][j] * s_sum[i]);
+        inp_val[i][j] = (T)(val[i][j] * s_sum[i]);//每个thrad所负责的val归一化后再乘以block和的倒数,得到softmax最后结果
       }
-      BlockStore(ts_store).Store(inp + (token_id + i) * to_len, inp_val[i],
+      BlockStore(ts_store).Store(inp + (token_id + i) * to_len, inp_val[i],//把block中每个thrad所负责的token对应的softmax结果都保存在inp中对应的Qtoken的各个相应的Ktoken中
                                  to_len);
     }
   }  // blockIdx.x
@@ -211,7 +211,7 @@ void launch_attn_softmax<float>(float *inp, const float *attn_mask,
                                 int batch_size, int nhead, int from_len,
                                 int to_len, bool mask_future,
                                 cudaStream_t stream) {
-  dim3 grid_dim(1, batch_size, nhead);
+  dim3 grid_dim(1, batch_size, nhead);//btbt grid dim相对固定,但block dim要基于序列长度和每个thread要处理的token数调整,保证一个block能处理完单个sample序列的所有seq_len个token,
   if (to_len <= 32) {
     ker_attn_softmax_lt32<float, 32, 1><<<grid_dim, 32, 0, stream>>>(
         inp, attn_mask, from_len, to_len, mask_future);
@@ -227,7 +227,7 @@ void launch_attn_softmax<float>(float *inp, const float *attn_mask,
     ker_attn_softmax<float, 128, 2><<<grid_dim, 128, 0, stream>>>(
         inp, attn_mask, from_len, to_len, mask_future);
   } else if (to_len <= 512) {
-    grid_dim.x = 64;
+    grid_dim.x = 64;//btbt ??? 为何此处grid_dim.x要为64 grid<64,batchSz,heads>,block<256> ??? 序列长点又要多一个else if?
     ker_attn_softmax<float, 256, 2><<<grid_dim, 256, 0, stream>>>(
         inp, attn_mask, from_len, to_len, mask_future);
   } else {
@@ -280,7 +280,7 @@ grad: [batch_size, nhead, seq_len, seq_len], output grad.
 output: [batch_size, nhead, seq_len, seq_len], output of softmax forward.
 */
 template <typename T, int ITERATIONS>
-__global__ void ker_attn_softmax_bw(T *grad, const T *inp, int softmax_length) {
+__global__ void ker_attn_softmax_bw(T *grad, const T *inp, int softmax_length) {//BTBT *** 这里和dropout&LN的backward使用tiled_partition的方式不同,从一开始就把gridDim和blockDim的处理变成列优先的,所以后面不用做别扭的从行优先变成列优先的转换,省了不少时间
   int batch_idx = blockIdx.x * blockDim.y + threadIdx.y;
   int offset = batch_idx * softmax_length + threadIdx.x;
 

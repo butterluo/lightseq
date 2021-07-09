@@ -221,7 +221,7 @@ void launch_bias_add_transform_20314<float>(float *output, const float *input,
                                             const float *bias, int dim_0,
                                             int dim_1, int dim_2, int dim_3,
                                             int dim_4, cudaStream_t stream) {
-  dim_4 >>= 2;
+  dim_4 >>= 2;//BTBT ?*? 为何这里要右位移2?相当于除以4?因为在kernel内float会转成float4处理
 
   dim3 grid_dim(dim_0, dim_1, dim_2);
   dim3 block_dim(min(dim_3 * dim_4, MAX_THREADS));
@@ -236,7 +236,7 @@ void launch_bias_add_transform_20314<__half>(__half *output,
                                              const __half *bias, int dim_0,
                                              int dim_1, int dim_2, int dim_3,
                                              int dim_4, cudaStream_t stream) {
-  dim_4 >>= 3;
+  dim_4 >>= 3;//BTBT ?*? 为何这里要右位移3?相当于除以8?因为在kernel内half会转成float4再转为__half2处理
 
   dim3 grid_dim(dim_0, dim_1, dim_2);
   dim3 block_dim(min(dim_3 * dim_4, MAX_THREADS));

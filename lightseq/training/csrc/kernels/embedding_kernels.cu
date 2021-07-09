@@ -43,10 +43,10 @@ __global__ void lookup_scale_pos_dropout<float>(
   int seq_id = blockIdx.y * blockDim.x + threadIdx.x;
   if (seq_id >= seq_len) return;
 
-  int target_pos = batch_id * seq_len + seq_id;
-  int start = target_pos * embedding_dim + threadIdx.y;
-  int end = (target_pos + 1) * embedding_dim;
-  int tid = input[target_pos];
+  int target_pos = batch_id * seq_len + seq_id;//batch中第几个sample的第几个tkn
+  int start = target_pos * embedding_dim + threadIdx.y; //target_pos对应的那个token在当前thread要处理的embed_dim中的那位值对应的位置
+  int end = (target_pos + 1) * embedding_dim;//target_pos对应的那个token在当前thread要处理的embed_dim的结束位置
+  int tid = input[target_pos];//tkn位置对应的那个token id
 
   float4 *output4 = reinterpret_cast<float4 *>(output);
   const float4 *embeddings4 = reinterpret_cast<const float4 *>(embeddings);
@@ -78,12 +78,12 @@ __global__ void lookup_scale_pos_dropout<float>(
     uint32_t *m4 = reinterpret_cast<uint32_t *>(m);
     dropout_mask4[i] = m4[0];
 
-    int offset = i - target_pos * embedding_dim;
-    float4 e4 = embeddings4[tid * embedding_dim + offset];
+    int offset = i - target_pos * embedding_dim;//初始位置是threadIdx.y指向的位置,每轮for按blockDim.y递增
+    float4 e4 = embeddings4[tid * embedding_dim + offset];//获得该token id所属的embeding的在embed dim中的该次循环要处理的位置
     // step is non-zero only in inference
     float4 pe4 = pos_embeddings4[(seq_id + step) * embedding_dim + offset];
     float4 res4;
-    res4.x = (emb_scale * e4.x + pe4.x) * scale * m[0];
+    res4.x = (emb_scale * e4.x + pe4.x) * scale * m[0];//token id 该次循环要处理的embed位置上的值加上对应的pos embed的位置上的值
     res4.y = (emb_scale * e4.y + pe4.y) * scale * m[1];
     res4.z = (emb_scale * e4.z + pe4.z) * scale * m[2];
     res4.w = (emb_scale * e4.w + pe4.w) * scale * m[3];
@@ -357,7 +357,7 @@ void launch_d_lookup_scale_pos_dropout<float>(
   dim3 zg_grid_dim((total_nums + MAX_THREADS - 1) / MAX_THREADS);
   dim3 zg_block_dim(MAX_THREADS);
 
-  zero_grads<float>
+  zero_grads<float>//BTBT [REFACTOR]??? zero_grads就不能放在下面的d_lookup_scale_pos_dropout一起做了?是shape和下面的grid/block不匹配么?
       <<<zg_grid_dim, zg_block_dim, 0, stream>>>(grad_embeddings, total_nums);
 
   int tokens_per_thread = (MAX_THREADS + embedding_dim - 1) / embedding_dim;

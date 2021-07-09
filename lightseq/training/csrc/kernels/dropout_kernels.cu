@@ -163,10 +163,10 @@ __global__ void ls_dropout_kernel(const int total_count, const float ratio,
                                   float *__restrict__ out,
                                   const float *__restrict__ in,
                                   uint8_t *__restrict__ mask, const int seed) {
-  const float scale = 1.f / (1.f - ratio);
+  const float scale = 1.f / (1.f - ratio);//btbt ??? 由于有效数据的数目缩小到原来的(1.f - ratio)倍,所以要乘以1.f / (1.f - ratio);?怎么解释?
   int i = blockIdx.x * blockDim.x + threadIdx.x;
 
-  if (i * 4 >= total_count) return;
+  if (i * 4 >= total_count) return;//btbt ??? 用了float4的缘故?这个if貌似不会true吧,进来前都除了1024的?
 
   curandStatePhilox4_32_10_t state;
   curand_init(seed, i, 0, &state);
@@ -320,7 +320,7 @@ template <>
 void launch_ls_dropout<float>(float *out, const float *vals, uint8_t *mask,
                               int total_count, float ratio, cudaStream_t stream,
                               bool backward) {
-  int grid_dim = total_count >> 12;
+  int grid_dim = total_count >> 12;//total_count / 1024
   if (!backward) {
     ls_dropout_kernel<<<grid_dim + 1, 1024, 0, stream>>>(
         total_count, ratio, out, vals, mask,
@@ -399,7 +399,7 @@ __global__ void ls_dropout_res_bias_kernel(
   uint32_t *m4 = reinterpret_cast<uint32_t *>(m);
   mask4[i] = m4[0];
   const float4 input4 = data4[i];
-  const float4 b4 = __ldg(&bias4[bias_i]);
+  const float4 b4 = __ldg(&bias4[bias_i]);//btbt 对于不是很大的数据,使用__ldg可让编译器根据情况把数据缓存起来以加快计算速度:https://stackoverflow.com/questions/26603188/what-is-the-difference-between-ldg-intrinsic-and-a-normal-execution
   const float4 res4 = residual4[i];
   float4 output4;
 
@@ -532,35 +532,35 @@ __global__ void ls_dropout_bias_bwd_kernel(
   cg::thread_block b = cg::this_thread_block();
   cg::thread_block_tile<WARP_SIZE> g = cg::tiled_partition<WARP_SIZE>(b);
 
-  int col_idx = flat_2dim(blockIdx.x, threadIdx.x, 8);
+  int col_idx = flat_2dim(blockIdx.x, threadIdx.x, 8);//col_idx指示hidSz的第几位
   int stride = hidden_size * 128;
   float local_sum = 0;
 
-  int idx = flat_2dim(threadIdx.y, col_idx, hidden_size);
+  int idx = flat_2dim(threadIdx.y, col_idx, hidden_size);//idx指示在batch_tokens中的第几个token的hidSz的第几位
   for (int r = threadIdx.y; r < row_size; r += 128) {
     float val = out_grad[idx];
     val *= scale * static_cast<float>(mask[idx]);
     local_sum += val;
-    in_grad[idx] = val;
-    idx += stride;
+    in_grad[idx] = val;//该drop层fw时的输入的导数
+    idx += stride;//由于strid是hidSz*128,所以idx在下一轮取得第下128个token的hidSz的第col_idx位
   }
 
   tile[threadIdx.x][threadIdx.y] = local_sum;
   __syncthreads();
 
   float sum = 0;
-  int tid = threadIdx.y * blockDim.x + threadIdx.x;
-  int x = tid >> 7;
-  int y = tid & (127);
+  int tid = threadIdx.y * blockDim.x + threadIdx.x;//btbt ??? 难道threadId(thread_rank???)是按列计算的?这里是用之前按行的threadIdx算出thread rank?然后tiled_partition划分的thread group就是按这种thread rank划分?然后才能用thread_block_tile.shfl_down?
+  int x = tid >> 7; // tid/128, x in [0, 8)
+  int y = tid & (127);//BTBT 相当于取模: tid % 128, 注意右边数必须是2^n-1 https://blog.csdn.net/salman_tan/article/details/87101374
   if (y < 32) {
 #pragma unroll
     for (int i = 0; i < 4; i++) {
-      sum += tile[x][y + i * 32];
+      sum += tile[x][y + i * 32];//btbt ???
     }
   }
   __syncthreads();
 
-  for (int i = 1; i < 32; i <<= 1) sum += g.shfl_down(sum, i);
+  for (int i = 1; i < 32; i <<= 1) sum += g.shfl_down(sum, i);//btbt ???
 
   if (y == 0) tile[0][x] = sum;
   __syncthreads();
@@ -697,7 +697,7 @@ __global__ void ls_dropout_act_bias_kernel(
   m[2] = (uint8_t)(rand.z > ratio);
   m[3] = (uint8_t)(rand.w > ratio);
 
-  int bias_i = i & ((hidden_size >> 2) - 1);
+  int bias_i = i & ((hidden_size >> 2) - 1);//btbt ???
   uint32_t *m4 = reinterpret_cast<uint32_t *>(m);
   mask4[i] = m4[0];
   const float4 input4 = data4[i];
@@ -705,7 +705,7 @@ __global__ void ls_dropout_act_bias_kernel(
   float4 output4;
 
   output4.x =
-      activation_kernel<act_type, float>(input4.x + b4.x) * scale * m[0];
+      activation_kernel<act_type, float>(input4.x + b4.x) * scale * m[0];//btbt ??? m[]在最左边会更快么,如果是从左算起的话?对于m[]为0的情况GPU或编译器会加速直接判断整个乘法为0么
   output4.y =
       activation_kernel<act_type, float>(input4.y + b4.y) * scale * m[1];
   output4.z =
@@ -809,7 +809,7 @@ template <>
 void launch_ls_dropout_act_bias<ActivationType::kRelu, float>(
     float *out, const float *vals, uint8_t *mask, const float *bias,
     int total_count, int dim, float ratio, cudaStream_t stream) {
-  int grid_dim = total_count >> 10;
+  int grid_dim = total_count >> 10; //total_count/1024
   ls_dropout_act_bias_kernel<ActivationType::kRelu>
       <<<grid_dim + 1, 256, 0, stream>>>(
           total_count, ratio, out, vals, mask, bias,
@@ -872,23 +872,23 @@ __global__ void ls_dropout_act_bias_bwd_kernel(
     for (int r = threadIdx.y; r < row_size; r += WARP_SIZE) {
       float val = out_grad[idx];
       float in = input[idx];
-      float b = bias[idx & (hidden_size - 1)];
+      float b = bias[idx & (hidden_size - 1)];//bias是[hidden_size],这里'idx & (hidden_size - 1)'是idx取hidden_size的模,取得是当前idx所指向的要处理的token所要求导的那位bias
       val = activation_bwd_kernel<act_type, float>(
           val * scale * static_cast<float>(mask[idx]), in + b);
       local_sum += val;
       in_grad[idx] = val;
-      idx += stride;
+      idx += stride;//idx在下一轮指向batch_tokens中下WARP_SIZE个token的hidSz的开始位置,因为stride=hidSz*WARP_SIZE
     }
   }
 
-  tile[threadIdx.x][threadIdx.y] = local_sum;
+  tile[threadIdx.x][threadIdx.y] = local_sum;//threadIdx.x指示了对hidSz中特定位进行求导,threadIdx.y结合上面的for运算就是对batch_token中的(rowSz/WARP_SZ)个token进行导数的汇总供bias求导
   __syncthreads();
-  float sum = tile[threadIdx.y][threadIdx.x];
-  __syncthreads();
+  float sum = tile[threadIdx.y][threadIdx.x];//这样做是因为thread_rank是以列优先进行递增的,本thread的rank所指向的值其实是指向tile[threadIdx.y][threadIdx.x]中的值(由于tile的行列都是WARP_SZ才可以这样转置)
+  __syncthreads();//上行之所以这样处理,是因为要用到tiled_partition和thread_block_tile.shfl_down,而tiled_partition的tile是基于按列优先递增的thread rank做的
 
   for (int i = 1; i < WARP_SIZE; i <<= 1) sum += g.shfl_down(sum, i);
 
-  if (threadIdx.x == 0) tile[0][threadIdx.y] = sum;
+  if (threadIdx.x == 0) tile[0][threadIdx.y] = sum;//只是那tile[0]用来保存总和而已
   __syncthreads();
 
   if (threadIdx.y == 0) {

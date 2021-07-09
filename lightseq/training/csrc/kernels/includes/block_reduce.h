@@ -47,11 +47,11 @@ __inline__ __device__ void warpReduce(float *pval);
 // static
 template <>
 __inline__ __device__ void warpReduce<ReduceType::kMax, 1>(float *pval) {
-  *pval = max(*pval, __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 16, 32));
+  *pval = max(*pval, __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 16, 32));//btbt 相当于两个两个找max,然后层层下来直到最后1层就是32个中的max
   *pval = max(*pval, __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 8, 32));
   *pval = max(*pval, __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 4, 32));
   *pval = max(*pval, __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 2, 32));
-  *pval = max(*pval, __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 1, 32));
+  *pval = max(*pval, __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 1, 32));//最后一层运行完后,warp中每个thread的pval都是该warp中所有pval的最大值
 }
 
 template <>
@@ -72,12 +72,12 @@ __inline__ __device__ void warpReduce<ReduceType::kMax, 2>(float *pval) {
 }
 
 template <>
-__inline__ __device__ void warpReduce<ReduceType::kSum, 1>(float *pval) {
+__inline__ __device__ void warpReduce<ReduceType::kSum, 1>(float *pval) {//btbt 求和思路和求max差不多,参考'warpReduce<ReduceType::kMax,'
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 16, 32);
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 8, 32);
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 4, 32);
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 2, 32);
-  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 1, 32);
+  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 1, 32);//最后一层运行完后,warp中每个thread的pval都是warp所有thread的pval之和
 }
 
 /*
@@ -126,13 +126,13 @@ __inline__ __device__ void warpReduce<ReduceType::kSum, 4>(float *pval) {
 }
 
 template <>
-__inline__ __device__ void blockReduce<ReduceType::kSum, 1>(float *pval) {
+__inline__ __device__ void blockReduce<ReduceType::kSum, 1>(float *pval) {//btbt 求和思路和求max差不多,参考'blockReduce<ReduceType::kMax'
   const int num = 1;
   static __shared__ float shared[num][32];
   int lane_id = threadIdx.x & 0x1f;
   int wid = threadIdx.x >> 5;
 
-  warpReduce<ReduceType::kSum, num>(pval);
+  warpReduce<ReduceType::kSum, num>(pval);//求block中每个warp中所有thrad的pval之和
 
   if (lane_id == 0) {
 #pragma unroll
@@ -153,7 +153,7 @@ __inline__ __device__ void blockReduce<ReduceType::kSum, 1>(float *pval) {
       *(pval + i) = 0.f;
     }
   }
-  warpReduce<ReduceType::kSum, num>(pval);
+  warpReduce<ReduceType::kSum, num>(pval);//前warp数目个thrad存储了每个warp的所有thread的和,这里是对这warp数目个thread求和(因其它thread是0.f),得到block的所有thrad的pval和
 }
 
 template <>
@@ -222,31 +222,31 @@ template <>
 __inline__ __device__ void blockReduce<ReduceType::kMax, 1>(float *pval) {
   const int num = 1;
   static __shared__ float shared[num][32];
-  int lane_id = threadIdx.x & 0x1f;
-  int wid = threadIdx.x >> 5;
+  int lane_id = threadIdx.x & 0x1f;//每个thread一个lane,32个thread一个warp,GPU是以线程束warp为单位运行的, 0x1f=31, ???这里是求该thread在该warp中的lane id?
+  int wid = threadIdx.x >> 5;//btbt ??? 求该thread属于哪个warp?
 
-  warpReduce<ReduceType::kMax, num>(pval);
+  warpReduce<ReduceType::kMax, num>(pval);//求warp中的最大值
 
   if (lane_id == 0) {
 #pragma unroll
     for (int i = 0; i < num; ++i) {
-      shared[i][wid] = *(pval + i);
+      shared[i][wid] = *(pval + i);//btbt ??? *(pval + i)啥意思?由于num=1所以这样做没影响,但这是为了兼容没实现的token_per_reduce的设计么?
     }
   }
   __syncthreads();
 
   if (threadIdx.x < (blockDim.x >> 5)) {
-#pragma unroll
+#pragma unroll //btbt 执行了'warpReduce<ReduceType::kMax'每个warp的所有thread的pval都是该warp的最大值,然后这里用前warp数量个thread去存储每个warp的的最大值,后面会再调一次'warpReduce<ReduceType::kMax'去计算这些存储了warp最大值的thread,进而得到该block中各个warp中的最大值
     for (int i = 0; i < num; ++i) {
       *(pval + i) = shared[i][lane_id];
     }
-  } else {
+  } else {//如果这些thread不用存储各warp的最大值,则置为REDUCE_FLOAT_INF_NEG
 #pragma unroll
     for (int i = 0; i < num; ++i) {
       *(pval + i) = REDUCE_FLOAT_INF_NEG;
     }
   }
-  warpReduce<ReduceType::kMax, num>(pval);
+  warpReduce<ReduceType::kMax, num>(pval);//上面有说明,再调一次'warpReduce<ReduceType::kMax'去计算这些存储了warp最大值的threads,进而得到该block中各个warp中的最大值
 }
 
 template <>
