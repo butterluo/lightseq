@@ -77,7 +77,7 @@ void TransformerEncoderLayer<T>::attn_layer_fw(const T *input_ptr,
   // attention scores, q*k
   _attn_scores.Forward(_batch_heads, _soft_out_ptr, k_tf_ptr, q_tf_ptr,//_batch_heads=batchSz*heads, _soft_out_ptr=max_batch_tokens*heads*max_seq_len
                        _cublasHandle);//就是调用cublasGemmStridedBatchedEx把batch_heads个K矩阵与同样数量的Q矩阵相乘,对于每个batch中的sample的每个head的每个token会与该sample的其它token得到一个atten分数
-  //batch=_batch_heads,m=seqLen,n=seqLen,k=headSz,stridA=m*k=seqLen*headSz,stridB=n*k=seqLen*headSz,stridC=m*n=seqLen*seqLen,alph=headSz,A=[(batchSz*头数=batch_heads)*headSz*seqLen]的第i个strid的转置是[seqLen*headSz],B=q_tf_ptr(形状同k_tf_ptr)
+  //batch=_batch_heads,m=seqLen,n=seqLen,k=headSz,stridA=m*k=seqLen*headSz,stridB=n*k=seqLen*headSz,stridC=m*n=seqLen*seqLen,alph=1/sqrt(headSz)s,A=[(batchSz*头数=batch_heads)*headSz*seqLen]的第i个strid的转置是[seqLen*headSz],B=q_tf_ptr(形状同k_tf_ptr)
   //out=C=_soft_out_ptr[(batchSz*头数=batch_heads)*seqLen*seqLen] stride窗口是在倒数的维度上滑动的,前面的维度(batch heads)是窗口的数目
   // Softmax + Mask //btbt ?*? Q*K后没有除以sqrt(d_k)?见创建_attn_scores时的'(T(1.0) / T(sqrt(_hidden_size / _heads)))',sqrt(d_k)已经作为alpha传给cublasGemmStridedBatchedEx去计算除法
   _softmax.Forward(_soft_out_ptr, input_mask_ptr, _batch_size, _seq_len,

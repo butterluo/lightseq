@@ -30,7 +30,7 @@ attn_mask: [batch_size, to_len], padding tokens are -inf,
   attn_mask=nullptr and mask_future=ture for dec-self-attn training
   attn_mask=nullptr and mask_future=false for dec-self-attn infer
 */
-template <typename T, int block_dim, int ele_per_thread>
+template <typename T, int block_dim, int ele_per_thread> //BTBT [BUG] ??? 用BLOCK_STORE_VECTORIZE的话item per thread应该是4的倍数会好些?
 __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
                                  int to_len, bool mask_future) {//btbt ??? 这里Q的seq_len为from_len,K的为to_len,可以设为不同,是为了兼容cross attn?
   int batch_id = blockIdx.y;
@@ -49,7 +49,7 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
   T mval[ele_per_thread];
   if (attn_mask) {
     attn_mask += batch_id * to_len;//btbt attn_mask指向的值为const但指针可移动,现移动到该sample的token起始位置(不用headId是因为每个头的mask都一样)
-    BlockLoad(ts_load).Load(attn_mask, mval, to_len, REDUCE_FLOAT_INF_NEG);
+    BlockLoad(ts_load).Load(attn_mask, mval, to_len, REDUCE_FLOAT_INF_NEG);//btbt mval指向哪个to tkn,与下面的inp_val一样,开始指针指向个to tkn基于(该block中的)threadIdx*ele_per_thread计算
   }
 
   inp += flat_3dim(batch_id, head_id, 0, nhead, from_len * to_len);//指针移动到该sample该头的token起始位置
@@ -57,8 +57,8 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
        token_id += gridDim.x * token_per_reduce) {//这样在from_len=512,gridDim.x=64,token_per_reduce=1的情况下相当于每个thread计算Q的from_len=512个token中的8个,每个block有256个thrad处理一个Qtoken的softmax,每个thread处理该Qtkn对应的2个K token的attn score求和,最终汇总到block对应的QK的softmax值
     T inp_val[token_per_reduce][ele_per_thread];
     for (int i = 0; i < token_per_reduce && (token_id + i) < from_len; i++) {
-      BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,//btbt inp指针移动到第token_id个token的attn score起始位置
-                              REDUCE_FLOAT_INF_NEG);
+      BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,//btbt inp指针移动到第token_id个token的attn score起始位置,因每个from tkn要和to_len个to tkn做attn score,所以要乘以to_len
+                              REDUCE_FLOAT_INF_NEG);//btbt inp_val存的是第token_id个from tkn对应的to_len个to tkn的ele_per_thread个to tkn的attn score,开始指针指向个to tkn基于(该block中的)threadIdx*ele_per_thread计算
     }
 
     /* step 1. compute max */
