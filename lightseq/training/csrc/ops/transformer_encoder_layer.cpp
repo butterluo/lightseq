@@ -290,7 +290,7 @@ void TransformerEncoderLayer<T>::ffn_layer_bw(const T *grad_output_ptr,
 }
 
 template <typename T>
-void TransformerEncoderLayer<T>::Backward(const T *grad_output_ptr,[batch_size * seq_len, hidden_size]
+void TransformerEncoderLayer<T>::Backward(const T *grad_output_ptr,//[batch_size * seq_len, hidden_size]
                                           const T *input_ptr,
                                           const T *output_ptr,
                                           const T *input_mask_ptr,
