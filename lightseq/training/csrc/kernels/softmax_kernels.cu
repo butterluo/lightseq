@@ -57,7 +57,7 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
        token_id += gridDim.x * token_per_reduce) {//这样在from_len=512,gridDim.x=64,token_per_reduce=1的情况下相当于每个thread计算Q的from_len=512个token中的8个,每个block有256个thrad处理一个Qtoken的softmax,每个thread处理该Qtkn对应的2个K token的attn score求和,最终汇总到block对应的QK的softmax值
     T inp_val[token_per_reduce][ele_per_thread];
     for (int i = 0; i < token_per_reduce && (token_id + i) < from_len; i++) {
-      BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,//btbt inp指针移动到第token_id个token的attn score起始位置,因每个from tkn要和to_len个to tkn做attn score,所以要乘以to_len
+      BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,//btbt inp指针移动到第token_id个token的attn score起始位置,因每个from tkn要和to_len个to tkn做attn score,所以要乘以to_len 
                               REDUCE_FLOAT_INF_NEG);//btbt inp_val存的是第token_id个from tkn对应的to_len个to tkn的ele_per_thread个to tkn的attn score,开始指针指向个to tkn基于(该block中的)threadIdx*ele_per_thread计算
     }
 
@@ -281,10 +281,10 @@ output: [batch_size, nhead, seq_len, seq_len], output of softmax forward.
 */
 template <typename T, int ITERATIONS>
 __global__ void ker_attn_softmax_bw(T *grad, const T *inp, int softmax_length) {//BTBT *** 这里和dropout&LN的backward使用tiled_partition的方式不同,从一开始就把gridDim和blockDim的处理变成列优先的,所以后面不用做别扭的从行优先变成列优先的转换,省了不少时间
-  int batch_idx = blockIdx.x * blockDim.y + threadIdx.y;
-  int offset = batch_idx * softmax_length + threadIdx.x;
+  int batch_idx = blockIdx.x * blockDim.y + threadIdx.y;//BTBT 标识[batch_size, nhead, seq_len]这么多个tkn中的第几个tkn
+  int offset = batch_idx * softmax_length + threadIdx.x;//BTBT 每个from tkn对应了softmax_length个to tkn,所以offset标识处理到了第batch_idx个from tkn之后的那个from tkn所对应的第threadIdx.x个to tkn
 
-  grad += offset;
+  grad += offset;//BTBT 指针移动到特定from tkn的特定to tkn上
   inp += offset;
 
   T grad_reg[ITERATIONS];
@@ -292,7 +292,7 @@ __global__ void ker_attn_softmax_bw(T *grad, const T *inp, int softmax_length) {
   float sum = 0.0;
 
 #pragma unroll
-  for (int i = 0; i < ITERATIONS; ++i) {
+  for (int i = 0; i < ITERATIONS; ++i) {//BTBT 在特定from tkn的特定to tkn开始,共处理ITERATIONS个to tkn,每隔WARP_SIZE个处理一个(cub所谓的stride形式)
     int curr_idx = threadIdx.x + i * WARP_SIZE;
     if (curr_idx < softmax_length) {
       grad_reg[i] = grad[i * WARP_SIZE];
@@ -317,7 +317,7 @@ __global__ void ker_attn_softmax_bw(T *grad, const T *inp, int softmax_length) {
 template <typename T>
 void launch_attn_softmax_bw(T *out_grad, const T *soft_inp, int rows,
                             int softmax_len, cudaStream_t stream) {
-  const int warps_per_block = 4;
+  const int warps_per_block = 4;//BTBT 更像是每个block处理多少个(from)tkn
   // rows = batch_size * nhead * from_len
   dim3 grid_dim(rows / warps_per_block);
   dim3 block_dim(WARP_SIZE, warps_per_block);

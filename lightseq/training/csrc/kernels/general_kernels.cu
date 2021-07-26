@@ -47,8 +47,8 @@ __global__ void column_sum_reduce(const T *__restrict__ inp,
   __syncthreads();
 
   // Sum the shared buffer.
-  // The change of threadIdx.x is continuous
-  float sum = tile[threadIdx.y][threadIdx.x];
+  // The change of threadIdx.x is continuous //BTBT 参考ker_attn_softmax_bw的做法或者更好些
+  float sum = tile[threadIdx.y][threadIdx.x];//BTBT ??? 这样取转置之后的数据,是因为thread_block_tile中的threa id(rank)是按列顺序来递增的缘故么(因为说了'threadIdx.x is continuous')
 
   __syncthreads();
 
@@ -56,7 +56,7 @@ __global__ void column_sum_reduce(const T *__restrict__ inp,
   for (int i = 1; i < WARP_SIZE; i <<= 1) sum += g.shfl_down(sum, i);
 
   if (threadIdx.x == 0) {
-    int pos = flat_2dim(blockIdx.x, threadIdx.y, WARP_SIZE);
+    int pos = flat_2dim(blockIdx.x, threadIdx.y, WARP_SIZE);//BTBT 由于前面进行了转置,所以这里用的是threadIdx.y而非threadIdx.x
     if (pos < cols) out[pos] = sum;
   }
 }
