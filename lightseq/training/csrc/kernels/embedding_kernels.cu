@@ -84,8 +84,8 @@ __global__ void lookup_scale_pos_dropout<float>(
     float4 pe4 = pos_embeddings4[(seq_id + step) * embedding_dim + offset];
     float4 res4;
     res4.x = (emb_scale * e4.x + pe4.x) * scale * m[0];//token id 该次循环要处理的embed位置上的值加上对应的pos embed的位置上的值
-    res4.y = (emb_scale * e4.y + pe4.y) * scale * m[1];
-    res4.z = (emb_scale * e4.z + pe4.z) * scale * m[2];
+    res4.y = (emb_scale * e4.y + pe4.y) * scale * m[1];//BTBT BUG pytorch中并无把sqrt(embedding_dim)作为emb_scale的玩法,不知道这里为何这样做?为何是乘而不是除?
+    res4.z = (emb_scale * e4.z + pe4.z) * scale * m[2];//BTBT BUG pytorch在dropout之前还做了LN,这里没做,这样会导致预训练参数无法使用
     res4.w = (emb_scale * e4.w + pe4.w) * scale * m[3];
     output4[i] = res4;
   }
