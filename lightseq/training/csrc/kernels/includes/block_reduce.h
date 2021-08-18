@@ -222,7 +222,7 @@ template <>
 __inline__ __device__ void blockReduce<ReduceType::kMax, 1>(float *pval) {
   const int num = 1;
   static __shared__ float shared[num][32];
-  int lane_id = threadIdx.x & 0x1f;//每个thread一个lane,32个thread一个warp,GPU是以线程束warp为单位运行的, 0x1f=31, ???这里是求该thread在该warp中的lane id?
+  int lane_id = threadIdx.x & 0x1f;//每个thread一个lane,32个thread一个warp,GPU是以线程束warp为单位运行的, 0x1f=31, ?*?这里是threadIdx.x模32,即求该thread在该warp中的lane id?
   int wid = threadIdx.x >> 5;//btbt ??? 求该thread属于哪个warp?
 
   warpReduce<ReduceType::kMax, num>(pval);//求warp中的最大值
@@ -235,7 +235,7 @@ __inline__ __device__ void blockReduce<ReduceType::kMax, 1>(float *pval) {
   }
   __syncthreads();
 
-  if (threadIdx.x < (blockDim.x >> 5)) {
+  if (threadIdx.x < (blockDim.x >> 5)) {//btbt [REFACTOR] ??? 这里如果是'lane_id < (blockDim.x >> 5)',是不是就可以让每个thread的pval都是最大值? 而不是像现在只有第一个warp的thread的pval含最大值,其它warp的thread的pval是REDUCE_FLOAT_INF_NEG
 #pragma unroll //btbt 执行了'warpReduce<ReduceType::kMax'每个warp的所有thread的pval都是该warp的最大值,然后这里用前warp数量个thread去存储每个warp的的最大值,后面会再调一次'warpReduce<ReduceType::kMax'去计算这些存储了warp最大值的thread,进而得到该block中各个warp中的最大值
     for (int i = 0; i < num; ++i) {
       *(pval + i) = shared[i][lane_id];
@@ -246,7 +246,7 @@ __inline__ __device__ void blockReduce<ReduceType::kMax, 1>(float *pval) {
       *(pval + i) = REDUCE_FLOAT_INF_NEG;
     }
   }
-  warpReduce<ReduceType::kMax, num>(pval);//上面有说明,再调一次'warpReduce<ReduceType::kMax'去计算这些存储了warp最大值的threads,进而得到该block中各个warp中的最大值
+  warpReduce<ReduceType::kMax, num>(pval);//上面有说明,再调一次'warpReduce<ReduceType::kMax'去计算这些存储了warp最大值的threads,进而得到该block中各个warp中的最大值 //btbt ??? warp shuffle会自带sync么
 }
 
 template <>

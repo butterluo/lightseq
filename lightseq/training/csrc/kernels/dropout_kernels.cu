@@ -169,7 +169,7 @@ __global__ void ls_dropout_kernel(const int total_count, const float ratio,
   if (i * 4 >= total_count) return;//btbt ??? 用了float4的缘故?这个if貌似不会true吧,进来前都除了1024的?
 
   curandStatePhilox4_32_10_t state;
-  curand_init(seed, i, 0, &state);
+  curand_init(seed, i, 0, &state);//btbt [REFACTOR] ???不能这样每个thread初始化一次curand,而要像inference代码中ker_curand_setup()用法那样,在第一次调用时初始化
   uint8_t m[4];
 
   float4 *out4 = reinterpret_cast<float4 *>(out);

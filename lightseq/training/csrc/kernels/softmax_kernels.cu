@@ -55,7 +55,7 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
   inp += flat_3dim(batch_id, head_id, 0, nhead, from_len * to_len);//指针移动到该sample该头的token起始位置
   for (int token_id = blockIdx.x * token_per_reduce; token_id < from_len;//gridDim.x控制Q的from_len上token的循环,每次取token_per_reduce个token与K的to_len个token计算得到的attn score做softmax计算,下一轮又取相隔gridDim.x * token_per_reduce的下一个token进行计算,用于token多而一个grid计算不完的情况
        token_id += gridDim.x * token_per_reduce) {//这样在from_len=512,gridDim.x=64,token_per_reduce=1的情况下相当于每个thread计算Q的from_len=512个token中的8个,每个block有256个thrad处理一个Qtoken的softmax,每个thread处理该Qtkn对应的2个K token的attn score求和,最终汇总到block对应的QK的softmax值
-    T inp_val[token_per_reduce][ele_per_thread];
+    T inp_val[token_per_reduce][ele_per_thread];//从上面和下几行的代码可知,token_per_reduce规定了每个thread处理多少个from tkn, ele_per_thread规定了每个thread处理多少个to tkn, token_id是指向from tkn的指针
     for (int i = 0; i < token_per_reduce && (token_id + i) < from_len; i++) {
       BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,//btbt inp指针移动到第token_id个token的attn score起始位置,因每个from tkn要和to_len个to tkn做attn score,所以要乘以to_len 
                               REDUCE_FLOAT_INF_NEG);//btbt inp_val存的是第token_id个from tkn对应的to_len个to tkn的ele_per_thread个to tkn的attn score,开始指针指向个to tkn基于(该block中的)threadIdx*ele_per_thread计算
@@ -88,7 +88,7 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
       for (int i = 0; i < token_per_reduce; i++) {
         s_max[i] = l_max[i];
       }
-    }
+    }//btbt [REFACTOR] ??? 如果token_per_reduce=1,这个s_max和__syncthreads是否可以省掉? 因为l_max就保存了该from tkn对应所有to tkn所计算出来的最大值 ???但blockReduce是否可以不用__syncthreads. 下面的__syncthreads也类似
     __syncthreads();//btbt [REFACTOR] __syncthreads有点多,blockReduce里面也还有,这样会影响性能
 
     /* step 2. compute sum */
@@ -97,7 +97,7 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
     for (int i = 0; i < token_per_reduce; i++) {
       l_sum[i] = 0.f;
       for (int j = 0; j < ele_per_thread; j++) {//block的每个thread基于block最大值归一化各自负责的val,然后对这些val求和(thread local sum)
-        val[i][j] = __expf(val[i][j] - s_max[i]);
+        val[i][j] = __expf(val[i][j] - s_max[i]);//极小值REDUCE_FLOAT_INF_NEG取exp为0
         l_sum[i] += val[i][j];
       }
     }
@@ -228,7 +228,7 @@ void launch_attn_softmax<float>(float *inp, const float *attn_mask,
         inp, attn_mask, from_len, to_len, mask_future);
   } else if (to_len <= 512) {
     grid_dim.x = 64;//btbt ??? 为何此处grid_dim.x要为64 grid<64,batchSz,heads>,block<256> ??? 序列长点又要多一个else if?
-    ker_attn_softmax<float, 256, 2><<<grid_dim, 256, 0, stream>>>(
+    ker_attn_softmax<float, 256, 2><<<grid_dim, 256, 0, stream>>>(//这里2是ele_per_thrad(每thrad处理2个to tkn), 2*256=512, //btbt ??? 但为何不是1*512
         inp, attn_mask, from_len, to_len, mask_future);
   } else {
     throw std::runtime_error(
