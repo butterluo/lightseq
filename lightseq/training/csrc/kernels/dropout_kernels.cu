@@ -856,20 +856,20 @@ __global__ void ls_dropout_act_bias_bwd_kernel(
     const T *__restrict__ bias, const T *out_grad,
     const uint8_t *__restrict__ mask, const int hidden_size) {
   const float scale = 1.f / (1.f - ratio);
-  __shared__ float tile[WARP_SIZE][WARP_SIZE + 1];
+  __shared__ float tile[WARP_SIZE][WARP_SIZE + 1];//btbt WARP_SIZE+1消除bank conflic,但其实只用到[WARP_SIZE][WARP_SIZE]
 
   cg::thread_block b = cg::this_thread_block();
   cg::thread_block_tile<WARP_SIZE> g = cg::tiled_partition<WARP_SIZE>(b);
 
-  int col_idx = flat_2dim(blockIdx.x, threadIdx.x, WARP_SIZE);
+  int col_idx = flat_2dim(blockIdx.x, threadIdx.x, WARP_SIZE);//btbt hidSz是col,每次warp取连续的32个出来算,因此glb对齐
 
   int stride = hidden_size * WARP_SIZE;
   float local_sum = 0;
 
   int idx = flat_2dim(threadIdx.y, col_idx, hidden_size);
   if (col_idx < hidden_size) {
-    for (int r = threadIdx.y; r < row_size; r += WARP_SIZE) {
-      float val = out_grad[idx];
+    for (int r = threadIdx.y; r < row_size; r += WARP_SIZE) {//btbt rowSz就是batchTkn,是row,每thread.y处理batchTkn/WARP_SZ个数的行,每次循环所处理的行相隔stride个元素,也就是WARP_SIZE行
+      float val = out_grad[idx];//btbt 每thread.x的每个循环处理对应col和一个stride的row的计算,最后汇总该thread.y所负责的所有stride行的,对应该col的grad和
       float in = input[idx];
       float b = bias[idx % hidden_size];
       val = activation_bwd_kernel<act_type, float>(
@@ -881,16 +881,16 @@ __global__ void ls_dropout_act_bias_bwd_kernel(
   }
 
   tile[threadIdx.x][threadIdx.y] = local_sum;
-  __syncthreads();
-  float sum = tile[threadIdx.y][threadIdx.x];
-  __syncthreads();
+  __syncthreads();//tile此时[hidSz某元素][batchTkn某strid]的grad和
+  float sum = tile[threadIdx.y][threadIdx.x];//由于操作的是[WARP_SIZE][WARP_SIZE],所以thread.x和y互换也是可以把该blk所负责的所有hidSz,以及以WARP_SIZE为stride的各个stride的grad和
+  __syncthreads();//跟转置关系不大
 
-  for (int i = 1; i < WARP_SIZE; i <<= 1) sum += g.shfl_down(sum, i);
+  for (int i = 1; i < WARP_SIZE; i <<= 1) sum += g.shfl_down(sum, i);//最终会得到该blk所负责的各个hidSz元素所对应的所有batchTkn的grad和
 
   if (threadIdx.x == 0) tile[0][threadIdx.y] = sum;
   __syncthreads();
 
-  if (threadIdx.y == 0) {
+  if (threadIdx.y == 0) {//在thread.y==0的threads,把blk所负责的32个hidSz所对应的所有batchTkn的grad和放到各自对应的bias grad中
     int pos = flat_2dim(blockIdx.x, threadIdx.x, WARP_SIZE);
     bias_grad[pos] = tile[0][threadIdx.x];
   }

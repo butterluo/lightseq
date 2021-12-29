@@ -80,7 +80,7 @@ class TransformerDecoder {
 
     lightseq::cuda::CHECK_GPU_ERROR(cudaMalloc(
         &d_encoder_output_, _max_batch_size * tw_._max_step * tw_._hidden_size *
-                                sizeof(optraits::DataType)));
+                                sizeof(optraits::DataType)));            //BTBT 这种内存分配为啥不放在Decoder.cc中做???
 
     lightseq::cuda::CHECK_GPU_ERROR(cudaMalloc(
         &d_output_,
@@ -115,7 +115,7 @@ class TransformerDecoder {
           encoder_output,
       py::array_t<int, py::array::c_style | py::array::forcecast>
           encoder_mask) {
-    auto encoder_out = encoder_output.mutable_unchecked<3>();
+    auto encoder_out = encoder_output.mutable_unchecked<3>();//BTBT array_t.mutable_unchecked()是pybind11中的方法,用于适配numpy,已无需检验各种约束的方式更快的访问Numpy的数据
     auto encoder_mask_out = encoder_mask.mutable_unchecked<2>();
     const float *encoder_output_data = encoder_out.data(0, 0, 0);
     const int *encoder_mask_data = encoder_mask_out.data(0, 0);

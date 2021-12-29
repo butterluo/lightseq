@@ -146,8 +146,8 @@ void launch_layer_norm<float>(float *ln_res, float *vars, float *means,
   }
   hidden_dim >>= 2;
   int nthread = min(((hidden_dim + 31) / 32) * 32, MAX_THREADS);
-  dim3 grid_dim(batch_size);
-  dim3 block_dim(nthread);
+  dim3 grid_dim(batch_size);//_batch_tokens 16*512=8192, 共读写192*8192=1572864 f4  12582912
+  dim3 block_dim(nthread);//768/4=192, 192/32=6个warp, 每blk分别读写192f4, thred0额外写1个f
 
   ker_layer_norm<float><<<grid_dim, block_dim, 0, stream>>>(
       ln_res, vars, means, inp, scale, bias, hidden_dim);
