@@ -483,7 +483,7 @@ __global__ void ker_dec_emb(const T *token_emb, const T *pos_emb, int *tokens,
                             const T *lang_emb, const int *lang_id, T *output,
                             int batch_size, int beam_size, int hidden_dim,
                             int vocab_size, int step, int max_step,
-                            int multilg_type) {
+                            int multilg_type) {//BTBT REFACTOR 类似这种计算简单,主要是数据腾挪的,最好用float4或更大的类型
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= batch_size * beam_size * hidden_dim) {
     return;

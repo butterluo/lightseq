@@ -58,47 +58,47 @@ class Decoder {
 
   const int* _p_d_padding_mask;
   const _DataType* _p_d_encoder_output;
-  int* _p_d_result;
+  int* _p_d_result;/*max_batch_size*beam_size*max_step*/
   int* _p_d_sample_unfinished;
   curandState* _p_d_curandstate;  //[batch_size]
   const int* _p_d_lang_id;        // source token id
 
   std::vector<float> _h_alive_seq_probs;
   std::vector<float> _h_length_norm;
-  float* _p_d_alive_seq_probs;
+  float* _p_d_alive_seq_probs;/*BTBT ??? 保存生产tkn的每个概率p*/
   float* _p_d_can_score;
   int* _p_d_can_idx;
   int* _p_d_can_num;
-  int* _p_d_alive_seq;
+  int* _p_d_alive_seq;/*初始化或生成的target tokn [max_batch_size*beam_size*max_step]初始值均为trg_start_id*/
   int* _p_d_alive_seq_buf;
-  _DataType* _p_d_cur_step_query;
+  _DataType* _p_d_cur_step_query;/*GPU memory buffer to save "query",In all layers, using the same buffer,[max_batch_size*beam_size*hidden_size] */
   // cur step's projected query-key-value in self atten, one pointer for one
   // decoder layer device memory in [batch_size, beam_size, 3, hidden_size]
   // format
-  _DataType* _p_d_self_step_qkv;
+  _DataType* _p_d_self_step_qkv;/*current step qkv [max_batch_size*beam_size*hidden_size*3]*/
   // key re-arrange for batch_geem in self atten, one pointer for one decoder
   // layer device memory in [batch_size, beam_size, head_num, dim_per_head,
   // max_step] format
-  std::vector<_DataType*> _p_d_self_k_bgeem;
-  _DataType** _p_d_self_k_bgeem1;
-  _DataType** _p_d_self_k_bgeem2;
+  std::vector<_DataType*> _p_d_self_k_bgeem;/*作为k的cache1&2的2维数组[2*n_dec_layer,[max_batch_size*beam_size*head_num*max_step*dim_per_head]]*/
+  _DataType** _p_d_self_k_bgeem1;/*作为k的cache1的2维数组[n_dec_layer,[max_batch_size*beam_size*head_num*max_step*dim_per_head]] */
+  _DataType** _p_d_self_k_bgeem2;/*作为k的cache2的2维数组[n_dec_layer,[max_batch_size*beam_size*head_num*max_step*dim_per_head]]*/
   // value re-arrange for batch_geem in self atten, one pointer for one decoder
   // layer device memory in [batch_size, beam_size, head_num, max_step,
   // dim_per_head] format
-  std::vector<_DataType*> _p_d_self_v_bgeem;
-  _DataType** _p_d_self_v_bgeem1;
-  _DataType** _p_d_self_v_bgeem2;
+  std::vector<_DataType*> _p_d_self_v_bgeem;/*作为v的cache1&2的2维数组[2*n_dec_layer,[max_batch_size*beam_size*head_num*max_step*dim_per_head]*/
+  _DataType** _p_d_self_v_bgeem1;/*作为v的cache1的2维数组[n_dec_layer,[max_batch_size*beam_size*head_num*max_step*dim_per_head]]*/
+  _DataType** _p_d_self_v_bgeem2;/*作为v的cache2的2维数组[n_dec_layer,[max_batch_size*beam_size*head_num*max_step*dim_per_head]]*/
   // key re-arrange for batch_geem in encdec atten, one pointer for one decoder
   // layer device memory in [batch_size, head_num, dim_per_head, batch_seq_len]
   // format
-  std::vector<_DataType*> _p_d_encdec_k_bgeem;
+  std::vector<_DataType*> _p_d_encdec_k_bgeem;/* 分层保持cros attn要到的由ecd out过来的k值,[batch_size, head_num, dim_per_head, batch_seq_len] */
   // value re-arrange for batch_geem in encdec atten, one pointer for one
   // decoder layer device memory in [batch_size, head_num, batch_seq_len,
   // dim_per_head] format
-  std::vector<_DataType*> _p_d_encdec_v_bgeem;
-  _DataType* _p_d_query_buf1;
-  _DataType* _p_d_query_buf2;
-  _DataType* _p_d_c;
+  std::vector<_DataType*> _p_d_encdec_v_bgeem;/* 分层保持cros attn要到的由ecd out过来的v值,[batch_size, head_num, dim_per_head, batch_seq_len] */
+  _DataType* _p_d_query_buf1;/* BTBT 用于attn的query buf [max_batch_size*beam_size*hidden_size] */
+  _DataType* _p_d_query_buf2;/* BTBT 用于ffw的query buf [max_batch_size*beam_size*max(hidden_size, inner_size)] */
+  _DataType* _p_d_c;/*BTBT correlation(attention score) buffer [max_batch_size*beam_size*head_num*max_step] */
   _DataType* _p_d_encoder_out_buf;
   _DataType* _p_d_logit_buf;
 
@@ -107,22 +107,22 @@ class Decoder {
   int _batch_token_num;
   int _layer_id;
   int _weight_offset;
-  int _step_token_num;
+  int _step_token_num;/*BTBT 一次decd step中包含多少tkn [batch_size*beam_size]*/
   int _batch_max_decode_length;
   bool _is_sampling;
 
   const std::vector<const _DataType*>& _p_d_trg_emb_wei;  // size: 7
   const std::vector<const _DataType*>&
-      _p_d_dec_wei;  // size: 18 * dec_layer_num
-  const _DataType _type_one;
-  const _DataType _type_zero;
+      _p_d_dec_wei;  /* size: 18 * dec_layer_num,保存了所有decd层的所有权重块,来自transformer_weight.get_dec_wei() */
+  const _DataType _type_one;/*常量1*/
+  const _DataType _type_zero;/*常量0*/
   const float _fzero;
   const _DataType
       _atten_scaler;          // scaling factor of Scaled Dot-Product Attention
   const float _logit_scaler;  // output scaling factor of the liner project
                               // after decoder
-  const long _layer_size_encdec_k;
-  const long _layer_size_self_k;
+  const long _layer_size_encdec_k;/*每层所需的由encd out得到的k矩阵的神经元个数:(max_batch_size * max_step * hidden_size)*/
+  const long _layer_size_self_k;/*(max_batch_size*max_step*hidden_size*beam_size)*/
 
  public:
   Decoder(int max_batch_size, const int* p_d_padding_mask,

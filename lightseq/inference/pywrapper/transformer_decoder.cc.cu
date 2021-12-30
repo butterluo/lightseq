@@ -110,7 +110,7 @@ class TransformerDecoder {
     }
   }
 
-  py::array_t<int> infer(
+  py::array_t<int> infer(//BTBT ??? 这个方法在一个TransformerDecoder处理多个请求,多并发的时候,会有线程安全问题吧
       py::array_t<float, py::array::c_style | py::array::forcecast>
           encoder_output,
       py::array_t<int, py::array::c_style | py::array::forcecast>
@@ -133,7 +133,7 @@ class TransformerDecoder {
     lightseq::cuda::CHECK_GPU_ERROR(
         cudaMemcpyAsync(d_encoder_output_, h_encoder_out.data(),
                         sizeof(optraits::DataType) * encoder_out.size(),
-                        cudaMemcpyHostToDevice, stream_));
+                        cudaMemcpyHostToDevice, stream_));//BTBT d_encoder_output_ 内存块用于保存请求中的encod out,在构造函数中已申请给了Decoder,d_padding_mask_也是,只是后者用于保持encod msk
     lightseq::cuda::CHECK_GPU_ERROR(
         cudaMemcpyAsync(d_padding_mask_, encoder_mask_data,
                         sizeof(int) * encoder_mask_out.size(),

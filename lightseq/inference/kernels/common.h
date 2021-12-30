@@ -121,17 +121,17 @@ __forceinline__ __device__ T blockRoughTopK(T val) {
   int wid = threadIdx.x >> 5;
   val = warpReduceMax(val);
 
-  if (lane == 0) shared[wid] = val;
+  if (lane == 0) shared[wid] = val;//BTBT 这里找blk中每个warp最大的(一个blk有32warp)
   __syncthreads();
 
   // we do not care about result of threadIdx.x bigger than (blockDim.x >> 5)
-  val = (threadIdx.x < (blockDim.x >> 5)) ? shared[lane] : 0;
+  val = (threadIdx.x < (blockDim.x >> 5)) ? shared[lane] : 0;//BTBT 只处理每个warp中最大值,即32个值
 
   // K should be 2, 4, 6, 8, 16 or 32
   for (int mask = 16; mask >= K; mask >>= 1)
-    val = max(val, __shfl_xor_sync(WARP_REDUCE_MASK, val, mask, 32));
+    val = max(val, __shfl_xor_sync(WARP_REDUCE_MASK, val, mask, 32));//BTBT 从上述32个值中每隔K个找K个中最大的
   for (int mask = (K >> 1); mask > 0; mask >>= 1)
-    val = min(val, __shfl_xor_sync(WARP_REDUCE_MASK, val, mask, 32));
+    val = min(val, __shfl_xor_sync(WARP_REDUCE_MASK, val, mask, 32));//BTBT 从上一个for中找出的最大值中找它们间最小的,也就是说该blk内的topK值应该是大于等于该值的
 
   return val;
 }

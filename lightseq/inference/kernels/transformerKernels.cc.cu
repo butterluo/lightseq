@@ -25,7 +25,7 @@ blockDim.x = max_thread_per_block
 logits: [batch_size, beam_size, vocab_size], cur step logit
 logit_bias: [vocab_size], logit bias
 seq_probs: [batch_size, beam_size], prefix sequence log probability
-seq_score: [batch_size, beam_size], prefix sequence score
+seq_score: [batch_size, beam_size], prefix sequence score ??? 该方法貌似没用到该参数
 alive_seq: [batch_size, beam_size, max_step], prefix sequence id
 can_idx: [batch_size, beam_size, vocab_size], topk candidate's index
 can_score: [batch_size, beam_size, vocab_size], topk candidate's score
@@ -99,9 +99,9 @@ __global__ void select_beam_rough_topk(
   __shared__ float s_topk;  // rough top k-th value of logits
   __shared__ int num_cur_beam_can;  // candidate number for this beam
   sum_exp_logit = blockReduceSum(sum_exp_logit);
-  rough_top_kth_logit = blockRoughTopK<float, beam_size>(rough_top_kth_logit);
+  rough_top_kth_logit = blockRoughTopK<float, beam_size>(rough_top_kth_logit);//??? 每个blk负责一个样本的一个beam,每个beam又有topK?beam不就已经是topK的概念了么?
   if (threadIdx.x == 0) {
-    s_log_prob_base = seq_probs[blockIdx.x] - logf(sum_exp_logit) - s_max_logit;
+    s_log_prob_base = seq_probs[blockIdx.x] - logf(sum_exp_logit) - s_max_logit;//??? seq_probs初始值是0或极小值,在这里起啥作用?
     s_topk = rough_top_kth_logit;
     num_cur_beam_can = 0;
   }
@@ -132,24 +132,24 @@ __global__ void select_beam_rough_topk(
       if (lgt >= s_topk)
         // pos: relative pos inside this iteration
         pos = atomicAdd(&l_n, 1);
-    }
+    }//BTBT ??? 此时pos中放的是该iter找到topk之一时的上一次的所在beam的已找到的topK个数
     __syncthreads();
 
     // leader increments the global counter
     if (threadIdx.x == 0) {
       atomicAdd(&num_cur_beam_can, l_n);
       l_n = atomicAdd(num_beam_can, l_n);
-    }
+    }//BTBT ??? 此时l_n中放的是该blk(beam)统计该次iter所找到topk个数时的上一次所统计的batch中各beam已找到的topK总数
     __syncthreads();
 
     // threads with true predicates write their elements
     if ((lgt >= s_topk)) {
       pos += l_n;  // increment local pos by global counter
-      if (diverse_lambda == 0) {
+      if (diverse_lambda == 0) {//???
         can_score[pos] = fmaxf((lgt + s_log_prob_base) * length_norm,
                                min_log_probability + 1.f) +
-                         batch_id * min_log_probability;
-      } else {
+                         batch_id * min_log_probability;//BTBT 方便在beam_search()中sort_by_key()时按batch_id或beam区分开排序
+      } else {//???
         can_score[pos] = fmaxf((lgt + s_log_prob_base) * length_norm,
                                min_log_probability + 1.f) +
                          blockIdx.x * min_log_probability;
@@ -160,7 +160,7 @@ __global__ void select_beam_rough_topk(
     idx += blockDim.x;
   }
   if (threadIdx.x == 0) {
-    num_beam_can[blockIdx.x + 1] = num_cur_beam_can;
+    num_beam_can[blockIdx.x + 1] = num_cur_beam_can;//BTBT 保存了该step的该batch中各个beam分别找到了多少topK,然后用这些数值作为下标,去can_idx,can_score找对应的tkn id及其分数
   }
 }
 
@@ -507,9 +507,9 @@ __global__ void ker_norm_layer_resual(T* input, T* output, const T* scale,
     val = input[i] - s_mean;
     output[i] = val * s_var * __ldg(&scale[i - block_start]) +
                 __ldg(&bias[i - block_start]);
-    if (is_post_ln) {
-      input[i] = output[i] + __ldg(&residual_bias[i - block_start]);
-    } else {
+    if (is_post_ln) {//BTBT 因post layernorm时,input已经在上次调该方法时+bias,output此时是基于有bias的input计算ln得到的,
+      input[i] = output[i] + __ldg(&residual_bias[i - block_start]);//这里output+bias=>input是为了计算'new_q = ori_q + new_q * output_wei'时提ori_q(也就是这里的input)提前加了output_bias
+    } else {//BTBT MAYBUG ??? 按照上述,若is_post_ln且emb后没做ln,第一次调该方法时应该不做任何ln计算,但这里还是计算了,会导致结果不吻合的问题???
       input[i] += __ldg(&residual_bias[i - block_start]);
     }
   }
@@ -738,7 +738,7 @@ __global__ void ker_arrange_decself_qkv(const T* ori_qkv, const T* qkv_bias,
   int hidden_size = dim_per_head * head_num;
   for (std::size_t i = threadIdx.x; i < hidden_size; i += blockDim.x) {
     // blockdim is equal to hidden_size
-    T val = ori_qkv[(blockIdx.x * gridDim.y + blockIdx.y) * hidden_size + i] +
+    T val = ori_qkv[(blockIdx.x * gridDim.y + blockIdx.y) * hidden_size + i] + //BTBT ??? (blockIdx.x * gridDim.y + blockIdx.y) qkv的排列是这样?
             __ldg(&qkv_bias[blockIdx.y * hidden_size + i]);
     int seq_id =
         blockIdx.x;  // obvious， seq_id = batch_id * beam_size + beam_id
@@ -856,7 +856,7 @@ template <typename T>
 __global__ void ker_arrange_encdec_kv(const T* ori_kv, const T* kv_bias,
                                       T* new_k, T* new_v, int offset_per_layer,
                                       int batch_seq_len, int dim_per_head,
-                                      int head_num) {
+                                      int head_num) {//BTBT REFACTOR 类似这种计算简单,主要是数据腾挪的,最好用float4或更大的类型
   int hidden_size = dim_per_head * head_num;
   for (std::size_t i = threadIdx.x; i < hidden_size; i += blockDim.x) {
     T val = ori_kv[(blockIdx.x * gridDim.y + blockIdx.y) * hidden_size + i] +
@@ -1128,7 +1128,7 @@ __global__ void ker_correlation_softmax_decself(T* correlation, int step_num) {
 
   float rsum = blockReduceSum(val);
   __shared__ float ssum;
-  if (threadIdx.x == 0) ssum = rsum;
+  if (threadIdx.x == 0) ssum = rsum;//BTBT REFACTOR 这个貌似不用?
   __syncthreads();
 
   if (threadIdx.x < step_num) correlation[idx] = (T)(val / ssum);
@@ -1334,8 +1334,8 @@ __global__ void ker_refresh_result(const int* can_idx, const float* can_score,
                                    int cur_step, float length_norm,
                                    float diverse_lambda, int end_id) {
   // step1 update alive_seq
-  int can_pos = num_can_per_beam[blockIdx.x * gridDim.y] + blockIdx.y;
-  int ori_can_idx = can_idx[can_pos];  // can_beam_id * vocab_size + vocab_id
+  int can_pos = num_can_per_beam[blockIdx.x * gridDim.y] + blockIdx.y;//BTBT 一个beam有多个候选(can),但由于beam_search()中通过sort_by_key按分由大到小排序,所以每个beam的头位置对应的就是分最大的那个can
+  int ori_can_idx = can_idx[can_pos];  // can_beam_id * vocab_size + vocab_id //??? 接上面,既然都是找最大的,何必要topK个can呢?
   int can_beam_id = ori_can_idx / vocab_size;
   int can_vocab_id = ori_can_idx % vocab_size;
   int rank_id;

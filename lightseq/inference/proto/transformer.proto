@@ -98,18 +98,18 @@ message ModelConf {
   int32 beam_size = 2;  // beam size of beam search
   int32 extra_decode_length =
       3;                     // extra decode length compared with source length
-  float length_penalty = 4;  // length penalty of beam search
-  int32 src_padding_id = 5;  // source padding id
-  int32 trg_start_id = 6;    // target start id
-  float diverse_lambda = 7; // diverse beam search lambda
-  string sampling_method = 8; // choice of beam_search, topk, topp, topk_greedy
+  float length_penalty = 4;  // length penalty of beam search //???
+  int32 src_padding_id = 5;  // source padding id  //BTBT ??? 如何起作用
+  int32 trg_start_id = 6;    // target start id  //BTBT ??? 如何起作用
+  float diverse_lambda = 7; // diverse beam search lambda //???
+  string sampling_method = 8; // choice of beam_search, topk, topp, topk_greedy  //BTBT ??? 如何起作用
   float topp = 9; // parameter for topp sampling
   int32 topk = 10; // parameter for topk sampling
-  int32 trg_end_id = 11; // eos of target embedding
+  int32 trg_end_id = 11; // eos of target embedding  //BTBT ??? 如何起作用
   bool is_post_ln = 12; // Pre-LN or Post-LN
-  bool no_scale_embedding = 13; // whether to scale embedding by sqrt(emb_dim)
+  bool no_scale_embedding = 13; // whether to scale embedding by sqrt(emb_dim)  //BTBT ??? 如何起作用
   bool use_gelu = 14; // use gelu for activation otherwise relu
-  // Multilingual model type, 0 for bilingual
+  // Multilingual model type, 0 for bilingual  //BTBT ??? 如何起作用
   // 1 for token level multilingual,
   // 2 for sentence level multilingual
   int32 multilg_type = 15;
