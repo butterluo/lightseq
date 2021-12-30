@@ -1364,7 +1364,7 @@ __global__ void ker_refresh_result(const int* can_idx, const float* can_score,
       if (diverse_lambda == 0) {
         seq_probs[blockIdx.x * gridDim.y + blockIdx.y] =
             (can_score[can_pos] - blockIdx.x * min_log_probability) /
-            length_norm;  // recover it
+            length_norm;  // recover it //BTBT 在select_beam_rough_topk()中为了sort_by_key后依然按batch_id分割开每个beam和候选can,另外也为了做len_norm,所以在分数做了手脚,这里把分数还原
       } else {
         seq_probs[blockIdx.x * gridDim.y + blockIdx.y] =
             (can_score[can_pos] - blockIdx.x * min_log_probability +
@@ -1375,7 +1375,7 @@ __global__ void ker_refresh_result(const int* can_idx, const float* can_score,
     return;
   }
 
-  // step3 update seq_score, num_finish_beam if finish seq
+  // step3 update seq_score, num_finish_beam if finish seq//BTBT can_vocab_id == end_id才走以下代码
   if (threadIdx.x == 0) {
     atomicAdd(num_finish_beam, 1);
   }
@@ -1431,7 +1431,7 @@ __global__ void ker_refresh_cache(const int* num_can_per_beam,
                                   bool diverse, int end_id) {
   int layer_id = blockIdx.x / (cur_step + 1);
   int step_id = blockIdx.x % (cur_step + 1);
-  int kv_id = blockIdx.y & 1;
+  int kv_id = blockIdx.y & 1;//BTBT MAYBUG ??? 模2(因2-1=1),但这种求模方法要求blockIdx.y为2次幂吧
   int beam_id_global = blockIdx.y >> 1;
   int batch_id = beam_id_global / beam_size;
   int beam_id = beam_id_global % beam_size;
@@ -1444,7 +1444,7 @@ __global__ void ker_refresh_cache(const int* num_can_per_beam,
     int can_beam_id =
         can_idx[can_pos] / vocab_size;  // can_beam_id * vocab_size + vocab_id
     if (diverse) can_beam_id %= beam_size;
-    if (can_idx[can_pos] % vocab_size == end_id) {
+    if (can_idx[can_pos] % vocab_size == end_id) {//BTBT REFACTOR 这个if是否上移到can_pos赋值时,以免return前无谓的计算
       return;
     }
 
@@ -1456,7 +1456,7 @@ __global__ void ker_refresh_cache(const int* num_can_per_beam,
     int new_id = base_pos + beam_offset * beam_id;
     if (kv_id == 0) {
       // for key
-      new_self_k_bgeem[new_id] = self_k_bgeem[ori_id];
+      new_self_k_bgeem[new_id] = self_k_bgeem[ori_id];//BTBT ???
     } else {
       // for value
       new_self_v_bgeem[new_id] = self_v_bgeem[ori_id];
@@ -1653,7 +1653,7 @@ __global__ void ker_write_topk_result(const int* alive_seq, float* seq_score,
   res_seq[blockIdx.x * blockDim.x + threadIdx.x] =
       alive_seq[blockIdx.x * max_step + threadIdx.x + 1];
   if (threadIdx.x == 0) {
-    seq_score[blockIdx.x] -= (blockIdx.x / beam_size) * min_log_probability;
+    seq_score[blockIdx.x] -= (blockIdx.x / beam_size) * min_log_probability;//???
     res_seq[blockIdx.x * blockDim.x + blockDim.x - 1] = end_id;
   }
 }

@@ -286,13 +286,13 @@ void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
   }
 
   /* ---step3. output the decoding result--- */
-  if (_output_topk || _is_sampling) {
+  if (_output_topk || _is_sampling) {//BTBT 看了此分支_output_topk=true,_is_sampling=='beam_search'
     if (_cur_step == _batch_max_decode_length) {
       _cur_step -= 1;
     }
     ker_write_topk_result<<<_batch_size * _tw._beam_size, _cur_step + 1, 0,
                             _stream>>>(
-        _p_d_alive_seq, _p_d_alive_seq_score, _p_d_result, _tw._trg_vocab_size,
+        _p_d_alive_seq, _p_d_alive_seq_score, _p_d_result, _tw._trg_vocab_size,//??? p_d_alive_seq_score的用法,是要返回么
         _tw._max_step, _tw._beam_size, _tw._end_id);
     return;
   }
@@ -751,7 +751,7 @@ bool Decoder<OpType_>::beam_search() {
   ker_refresh_result<<<dim3(_batch_size, _tw._beam_size), _tw._max_step, 0,
                        _stream>>>(
       _p_d_can_idx, _p_d_can_score, _p_d_can_num + 1, _p_d_alive_seq/*old_alive_seq*/,
-      _p_d_alive_seq_buf/*new_alive_seq*/, _p_d_alive_seq_probs, _p_d_alive_seq_score,
+      _p_d_alive_seq_buf/*new_alive_seq*/, _p_d_alive_seq_probs, _p_d_alive_seq_score,//??? p_d_alive_seq_score只有遇到trg_end_id才更新?
       _p_d_can_num, _tw._trg_vocab_size, _cur_step, _h_length_norm[_cur_step],
       _tw._diverse_lambda, _tw._end_id);
   int* tmp = _p_d_alive_seq_buf;
@@ -774,7 +774,7 @@ bool Decoder<OpType_>::beam_search() {
   }
 #endif
 
-  if (_h_can_num_batch == _step_token_num) {
+  if (_h_can_num_batch == _step_token_num) {//?????? _h_can_num_batch不是大于_step_token_num才对么?因为一个beam会有多个候选can阿?can和beam的关系是啥?
 #ifdef DEBUG_RESULT
     std::cout << "early stop beam search!" << std::endl;
 #endif
@@ -784,14 +784,14 @@ bool Decoder<OpType_>::beam_search() {
   /* ---step 4. refresh cache: k, v for decoder self attention--- */
   if (_cur_step > 0) {
     ker_refresh_cache_launcher<_DataType>(
-        _tw._n_dec_layer * (_cur_step + 1), _step_token_num * 2,
-        _max_thread_per_block, _stream, _p_d_can_num + 1, _p_d_can_idx,
-        _p_d_self_k_bgeem1[0], _p_d_self_v_bgeem1[0], _p_d_self_k_bgeem2[0],
+        _tw._n_dec_layer * (_cur_step + 1) /*grid_dim_x*/ , _step_token_num * 2 /*grid_dim_y*/,
+        _max_thread_per_block /*block_dim*/, _stream, _p_d_can_num + 1, _p_d_can_idx,
+        _p_d_self_k_bgeem1[0]/*self_k_bgeem*/, _p_d_self_v_bgeem1[0], _p_d_self_k_bgeem2[0]/*new_self_k_bgeem*/,
         _p_d_self_v_bgeem2[0], _layer_size_self_k, _tw._beam_size,
         _tw._dim_per_head, _tw._head_num, _tw._trg_vocab_size, _cur_step,
         _tw._max_step, _tw._diverse_lambda != 0, _tw._end_id);
     _DataType** ftmp = _p_d_self_k_bgeem2;
-    _p_d_self_k_bgeem2 = _p_d_self_k_bgeem1;
+    _p_d_self_k_bgeem2 = _p_d_self_k_bgeem1;//??? _p_d_self_k_bgeem1和_p_d_self_k_bgeem2的用途?ker_refresh_cache_launcher的意图?
     _p_d_self_k_bgeem1 = ftmp;
     ftmp = _p_d_self_v_bgeem2;
     _p_d_self_v_bgeem2 = _p_d_self_v_bgeem1;
