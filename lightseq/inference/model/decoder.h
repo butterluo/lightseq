@@ -65,7 +65,7 @@ class Decoder {
 
   std::vector<float> _h_alive_seq_probs;
   std::vector<float> _h_length_norm;
-  float* _p_d_alive_seq_probs;/*BTBT ??? 保存生产tkn的每个概率p*/
+  float* _p_d_alive_seq_probs;/*BTBT ??? 保存生产tkn的每个概率p[max_batch_size*beam_size]*/
   float* _p_d_can_score;
   int* _p_d_can_idx;
   int* _p_d_can_num;

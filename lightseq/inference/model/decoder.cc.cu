@@ -732,8 +732,8 @@ bool Decoder<OpType_>::beam_search() {
                                      _stream, _tw._beam_size,
                                      _tw._diverse_lambda, _tw._trg_vocab_size);
   }
-
-  thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score,//BTBT 在_diverse_lambda==0时因在select_beam_rough_topk()中'batch_id * min_log_probability',所以这排序后batch_id(也就是该batch中各样本的顺序位置)不变,只是样本中的那几个beam对应的tkn id按score从大到小排序了
+  
+  thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score,//BTBT 因在select_beam_rough_topk()中'batch_id * min_log_probability',所以这排序后batch_id(也就是该batch中各样本的顺序位置)不变,只是样本中的那几个beam对应的tkn id按score从大到小排序了
                       _p_d_can_score + _h_can_num_batch, _p_d_can_idx, //BTBT 根据 _p_d_can_score 里的key对_p_d_can_idx 进行排序
                       thrust::greater<float>()); // 排序方法 https://thrust.github.io/doc/group__sorting_gaec4e3610a36062ee3e3d16607ce5ad80.html#gaec4e3610a36062ee3e3d16607ce5ad80
 
@@ -746,7 +746,7 @@ bool Decoder<OpType_>::beam_search() {
     step 3. refresh alive_seq, seq_probs, seq_score, num_finish_beam
       based on sorted candidate.
       Deciding whether early stop based on num_finish_beam
-  */
+  *///BTBT ??? 若diverse_lambda==0,每个beam只选择top1分数的候选
   CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));
   ker_refresh_result<<<dim3(_batch_size, _tw._beam_size), _tw._max_step, 0,
                        _stream>>>(
@@ -774,7 +774,7 @@ bool Decoder<OpType_>::beam_search() {
   }
 #endif
 
-  if (_h_can_num_batch == _step_token_num) {//?????? _h_can_num_batch不是大于_step_token_num才对么?因为一个beam会有多个候选can阿?can和beam的关系是啥?
+  if (_h_can_num_batch == _step_token_num) {//BTBT 当batch中每个beam选的tkn都是end_id的时候,就会h_can_num_batch==step_token_num,否则都是>step_token_num
 #ifdef DEBUG_RESULT
     std::cout << "early stop beam search!" << std::endl;
 #endif

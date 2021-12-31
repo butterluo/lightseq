@@ -146,15 +146,15 @@ __global__ void select_beam_rough_topk(
     if ((lgt >= s_topk)) {
       pos += l_n;  // increment local pos by global counter
       if (diverse_lambda == 0) {//???
-        can_score[pos] = fmaxf((lgt + s_log_prob_base) * length_norm,
+        can_score[pos] = fmaxf((lgt + s_log_prob_base) * length_norm,//length_penalty不等于0时,length_norm会随着step的增加而变小,进而该step对应的候选tkn的分数也会变小,进而迫使生成短文本
                                min_log_probability + 1.f) +
-                         batch_id * min_log_probability;//BTBT 方便在beam_search()中sort_by_key()时按batch_id或beam区分开排序
+                         batch_id * min_log_probability;//BTBT 方便在beam_search()中sort_by_key()时按batch_id或beam区分开排序,注意'batch_id * min_log_probability'是个负数,也就是batch_id或beam_id(blockIdx.x)越大的减的越多,这回迫使按分数大的排前面时,依然会按照batch_id/beam_id的由小到大排序
       } else {//???
         can_score[pos] = fmaxf((lgt + s_log_prob_base) * length_norm,
                                min_log_probability + 1.f) +
                          blockIdx.x * min_log_probability;
       }
-      can_idx[pos] = idx - batch_start_pos;
+      can_idx[pos] = idx - batch_start_pos;//BTBT p_d_can_idx存放了该batch_id对应的'can_beam_id * vocab_size + vocab_id',其中can_beam_id是指该batch中的第几个beam
     }
     __syncthreads();
     idx += blockDim.x;
@@ -247,20 +247,20 @@ __global__ void ker_diverse_beam_search(float* can_score, int* can_ids,
   num_beam_can += 1;
   int can_pos = num_beam_can[blockIdx.x];
   int batch_id = blockIdx.x / beam_size;
-  int beam_score_left_idx = can_pos + threadIdx.x;
+  int beam_score_left_idx = can_pos + threadIdx.x;//BTBT REFACTOR 这里threadIdx.x稍微大点,就会导致beam_score_left_idx>right_idx,这样max_thread_per_block=1024个thread中会浪费很多thread啊
   int beam_score_right_idx = blockIdx.x == (gridDim.x - 1)
                                  ? total_candidates
                                  : num_beam_can[blockIdx.x + 1];
   for (int idx = beam_score_left_idx; idx < beam_score_right_idx;
        idx += blockDim.x) {
     atomicAdd(can_score + idx, batch_id * min_log_probability -
-                                   min_log_probability * blockIdx.x -
-                                   diverse_lambda * (idx - can_pos + 1));
+                                   min_log_probability * blockIdx.x - //BTBT 把can_score在select_beam_rough_topk时按beam_id(blockIdx.x)分隔的改成按batch_id(样本)分隔
+                                   diverse_lambda * (idx - can_pos + 1));//BTBT 原来的分数按原由大到小的排名(idx-can_pos)做惩罚,因子为diverse_lambda
     int ori_can_idx = can_ids[idx];  // can_beam_id * vocab_size + vocab_id
     int can_beam_id = ori_can_idx / vocab_size;
     int can_vocab_id = ori_can_idx % vocab_size;
     can_ids[idx] =
-        (can_beam_id + (idx - can_pos) * beam_size) * vocab_size + can_vocab_id;
+        (can_beam_id + (idx - can_pos) * beam_size) * vocab_size + can_vocab_id;    //BTBT ??? 没看懂为何这样打乱 (idx - can_pos)是在该beam中排名;can_beam_id标识的某样本的第几个beam
   }
 }
 
