@@ -256,11 +256,11 @@ template <OperationType OpType_>
 void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
   /* ---step1. init--- */
   _batch_size = batch_size;
-  _batch_seq_len = batch_seq_len;
+  _batch_seq_len = batch_seq_len;//BTBT batch_seq_len是指encoder的输出的一个batch的seq_len,一般是该batch中encoder output的最长seq_len,即src在该batch中的最长seq_len
   _batch_token_num = batch_size * batch_seq_len;
   _step_token_num = batch_size * _tw._beam_size;
   _batch_max_decode_length =
-      min(_tw._max_step, batch_seq_len + _tw._extra_decode_length) - 1; //BTBT batch_seq_len??? max_step??? _extra_decode_length??? 为何减1??? _batch_max_decode_length???
+      min(_tw._max_step, batch_seq_len + _tw._extra_decode_length) - 1; //BTBT batch_seq_len??? 为何减1,为了去掉标识句子开头tkn的长度??? _batch_max_decode_length??? //_extra_decode_length表示要在src seq len的基础上顶多再生成(翻译)出多几个target tkn的个数
   _is_sampling =
       (_tw._sampling_method == "topk" || _tw._sampling_method == "topp" ||
        _tw._sampling_method == "topk_greedy");
@@ -345,7 +345,7 @@ void Decoder<OpType_>::project_encoder_output() {
 #endif
   ker_arrange_encdec_kv_launcher<_DataType>(//BTBT _p_d_trg_emb_wei[5]是enc_out_bias_kv,这里是把bias加到上面矩阵相乘得到的cros attn所需的kv值上
       _batch_token_num, _tw._n_dec_layer, _tw._hidden_size, _stream,
-      _p_d_encoder_out_buf, _p_d_trg_emb_wei[5], _p_d_encdec_k_bgeem[0],// _p_d_encdec_k_bgeem, _p_d_encdec_v_bgeem ctrl有注释
+      _p_d_encoder_out_buf, _p_d_trg_emb_wei[5], _p_d_encdec_k_bgeem[0],// _p_d_encdec_k_bgeem, _p_d_encdec_v_bgeem ctrl有注释,保存了每层计算encdec attn所需要的由encd output计算出来的kv值
       _p_d_encdec_v_bgeem[0], _layer_size_encdec_k, _batch_seq_len,
       _tw._dim_per_head, _tw._head_num, _max_thread_per_block);
   return;
@@ -482,8 +482,8 @@ void Decoder<OpType_>::self_attention() {
   // get q, k, v by split and reshape qkv
   ker_arrange_decself_qkv_launcher<_DataType>(
       _step_token_num, _tw._hidden_size, _stream, _p_d_self_step_qkv,
-      _p_d_dec_wei[_weight_offset + 3]/*self_project_bias_qkv*/, _p_d_query_buf1,
-      _p_d_self_k_bgeem1[_layer_id], _p_d_self_v_bgeem1[_layer_id],
+      _p_d_dec_wei[_weight_offset + 3]/*self_project_bias_qkv*/, _p_d_query_buf1,/*new_q*/
+      _p_d_self_k_bgeem1[_layer_id]/*new_k*/, _p_d_self_v_bgeem1[_layer_id],/*new_v*/
       _tw._head_num, _tw._dim_per_head, _tw._max_step, _cur_step,
       _max_thread_per_block);
 
@@ -791,7 +791,7 @@ bool Decoder<OpType_>::beam_search() {
         _tw._dim_per_head, _tw._head_num, _tw._trg_vocab_size, _cur_step,
         _tw._max_step, _tw._diverse_lambda != 0, _tw._end_id);
     _DataType** ftmp = _p_d_self_k_bgeem2;
-    _p_d_self_k_bgeem2 = _p_d_self_k_bgeem1;//??? _p_d_self_k_bgeem1和_p_d_self_k_bgeem2的用途?ker_refresh_cache_launcher的意图?
+    _p_d_self_k_bgeem2 = _p_d_self_k_bgeem1;//??? _p_d_self_k_bgeem1和_p_d_self_k_bgeem2的用途?ker_refresh_cache_launcher的意图?貌似_p_d_self_k_bgeem2只用在这里
     _p_d_self_k_bgeem1 = ftmp;
     ftmp = _p_d_self_v_bgeem2;
     _p_d_self_v_bgeem2 = _p_d_self_v_bgeem1;

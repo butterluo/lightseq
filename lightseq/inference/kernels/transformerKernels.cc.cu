@@ -259,9 +259,9 @@ __global__ void ker_diverse_beam_search(float* can_score, int* can_ids,
     int ori_can_idx = can_ids[idx];  // can_beam_id * vocab_size + vocab_id
     int can_beam_id = ori_can_idx / vocab_size;
     int can_vocab_id = ori_can_idx % vocab_size;
-    can_ids[idx] =
-        (can_beam_id + (idx - can_pos) * beam_size) * vocab_size + can_vocab_id;    //BTBT ??? 没看懂为何这样打乱 (idx - can_pos)是在该beam中排名;can_beam_id标识的某样本的第几个beam
-  }
+    can_ids[idx] =//BTBT 原分数基于排名做惩罚后,再把分数对应到某batch_id(样本)的不同rank上,然后在can_ids中加入基于样本的beam信息与rank信息.这个rank是指多个beam中的排名处于不同位置的候选can,比如4个beam中均排第0位的4个can会分到rank0(见下面的'(idx - can_pos) * beam_size',这里的beam_size作为can size或rank size用)
+        (can_beam_id + (idx - can_pos) * beam_size) * vocab_size + can_vocab_id;//在select_beam_rough_topk中只是把分数对应到样本的beam_id中(也就是can_beam_id),并无排名信息.所谓,can_beam_id其实就是一个样本中的第几个beam,比如某样本的第一个beam的can_beam_id就是0,它是基于样本内的beam个数的,而不是batch内的beam总数
+  }//BTBT 上述can_ids中包含的can_beam_id和rank信息会在ker_refresh_result中选择最终beam的tkn id时会被反解码出来
 }
 
 void ker_diverse_beam_search_launcher(float* can_score, int* can_ids,
@@ -1368,7 +1368,7 @@ __global__ void ker_refresh_result(const int* can_idx, const float* can_score,
       } else {
         seq_probs[blockIdx.x * gridDim.y + blockIdx.y] =
             (can_score[can_pos] - blockIdx.x * min_log_probability +
-             diverse_lambda * (rank_id + 1)) /
+             diverse_lambda * (rank_id + 1)) / //BTBT 如果是按排名对原分数做了惩罚的话,要按照从can_idx中解码出来的rank把分数还原回去,原来没做任何分隔,len_norm(避免过长),排名惩罚(避免多样性不足)之前的分数,作为所选的tkn id对应的概率
             length_norm;
       }
     }
