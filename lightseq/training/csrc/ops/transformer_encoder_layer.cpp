@@ -56,9 +56,9 @@ template <typename T>
 void TransformerEncoderLayer<T>::attn_layer_fw(const T *input_ptr,
                                                const T *input_mask_ptr,
                                                T *output_ptr, T *buffer) {
-  T *q_tf_ptr = _qkv_ptr;
-  T *k_tf_ptr = q_tf_ptr + _batch_dim;
-  T *v_tf_ptr = k_tf_ptr + _batch_dim;
+  T *q_tf_ptr = _qkv_ptr;//保存batch中所有的Q向量
+  T *k_tf_ptr = q_tf_ptr + _batch_dim;//保存batch中所有的K向量
+  T *v_tf_ptr = k_tf_ptr + _batch_dim;//保存batch中所有的V向量
 
   if (_pre_or_postLayerNorm) {
     _attn_ln.Forward(_gemmQKV_inp_ptr, input_ptr, _attn_nw_ptr, _attn_nb_ptr,
@@ -66,10 +66,10 @@ void TransformerEncoderLayer<T>::attn_layer_fw(const T *input_ptr,
   }
   const T *gemmQKV_inp_ptr =
       _pre_or_postLayerNorm ? _gemmQKV_inp_ptr : input_ptr;
-  _qkv_linear.Forward(_batch_tokens, gemmQKV_inp_ptr, _attn_qkvw_ptr, buffer,
-                      _cublasHandle);
-
-  launch_bias_add_transform_20314<T>(q_tf_ptr, buffer, _attn_qkvb_ptr,
+  _qkv_linear.Forward(_batch_tokens, gemmQKV_inp_ptr, _attn_qkvw_ptr, buffer,//把tkn_emb计算成QKV向量
+                      _cublasHandle);//cublasGemmEx中A为_attn_qkvw_ptr,B为gemmQKV_inp_ptr,m=3*hidSz,n=batch_tkn,k=hidSz;A为行主序[3*hidSz,hidSz]即[m,k],主维度为它可连续取元素的维度,这里是宽,即k=lda=hidSz,故A要转置成列主序的[m,k];而B虽为行主序[batch_tkn,hidSz]即[n,k],但从列主序的角度看,可看成是列主序的[hidSz,batch_tkn]即[k,n],主维度为它可连续取元素的维度,这里是列主序时的高,即k=ldb=hidSz,故B无需转置.
+  //buffer为上一行所生成的QKV向量,列主序[m,n]即[3*hidSz,batch_tkn],从行主序看就是[batch_tkn,3*hidSz],而下一行就是把此buffer(即计算出来的所有batch_tkn的QKV)的shape从[batchSz, seqlen, 3, hidSz] 转为-> [3, batchSz, heads, seqlen, headDim],顺便把计算QKV向量所需的bias加上
+  launch_bias_add_transform_20314<T>(q_tf_ptr, buffer, _attn_qkvb_ptr,//q_tf_ptr指向[3, batchSz, heads, seqlen, headDim]的开端,往后移动_batch_dim就是k_tf_ptr,再移动_batch_dim就是v_tf_ptr
                                      _batch_size, _seq_len, 3, _heads,
                                      _hidden_size / _heads, _stream);
 
@@ -138,7 +138,7 @@ void TransformerEncoderLayer<T>::Forward(const T *input_ptr,
                                          const T *input_mask_ptr, T *out_ptr) {
   _stream = Context::Instance().get_stream();
   _cublasHandle = Context::Instance().get_cublashandle();
-  T *attn_buffer = _shared_mem_ptr;  // 3 * _batch_dim
+  T *attn_buffer = _shared_mem_ptr;  // 3 * _batch_dim //batch_dim=_batch_tokens * _hidden_size
   // _batch_dim
   T *ffn_inp_ptr =
       _pre_or_postLayerNorm ? _shared_mem_ptr + 3 * _batch_dim : _ff1_inp_ptr;

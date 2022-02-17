@@ -35,9 +35,9 @@ class FeedForward {
     float alpha = T(1.);
     float beta = T(0.);
 
-    cublas_gemm_ex(_cublasHandle, CUBLAS_OP_T, CUBLAS_OP_N, config_.outputSize,
-                   bsz, config_.inputSize, &alpha, &beta, weights, input_ptr,
-                   out, cublasGemmAlgo_t(config_.gemm_algos[0]));
+    cublas_gemm_ex(_cublasHandle, CUBLAS_OP_T/*trans_a*/, CUBLAS_OP_N/*trans_b*/, config_.outputSize/*m*/,
+                   bsz/*n*/, config_.inputSize/*k*/, &alpha, &beta, weights/*A*/, input_ptr/*B*/,
+                   out/*C*/, cublasGemmAlgo_t(config_.gemm_algos[0]));
   }
   void Backward(int bsz, const T *out_grad, const T *input_ptr,
                 const T *weights, T *weights_grad, T *bias_grad,

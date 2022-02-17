@@ -172,14 +172,14 @@ class TransformerEncoderLayer {
   const size_t _intermediate_size;
   const size_t _max_batch_tokens;
   const size_t _max_seq_len;
-  const bool _pre_or_postLayerNorm;
+  const bool _pre_or_postLayerNorm;//true 指pre LN,否则post LN
   const std::string _activation_fn;
   // dynamic parameter between batch
   size_t _batch_size;
   size_t _seq_len;
-  size_t _batch_tokens;
-  size_t _batch_heads;
-  size_t _batch_dim;
+  size_t _batch_tokens;//该batch的总tkn数[batch_size * seq_len]
+  size_t _batch_heads;//该batch共有多少head:[batch_size * _heads]
+  size_t _batch_dim;//该batch的总元素数[_batch_tokens * _hidden_size]
   bool _training;
 
   cublasHandle_t _cublasHandle;
@@ -196,7 +196,7 @@ class TransformerEncoderLayer {
   Dropout<T> _attn_dropout;
   Dropout<T> _ffn_activation_dropout;
   Dropout<T> _ffn_dropout;
-  StridedBatchGemm<T> _attn_scores;
+  StridedBatchGemm<T> _attn_scores;//StridedBatchGemm设置为:m=_seq_len, n=_seq_len, k=hidden_size/heads, alpha=1/sqrt(_hidden_size / _heads), beta=0, opA=T, opB=N
   StridedBatchGemm<T> _attn_context;
 
   // local GPU memory
@@ -212,7 +212,7 @@ class TransformerEncoderLayer {
   static T *_shared_mem_ptr;
 
   // weights ptr
-  const T *_attn_qkvw_ptr;
+  const T *_attn_qkvw_ptr;//该权重负责将tkn_emb计算成QKV向量.[_hidden_size * _hidden_size * 3]
   const T *_attn_qkvb_ptr;
   const T *_attn_ow_ptr;
   const T *_attn_ob_ptr;

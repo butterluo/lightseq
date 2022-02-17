@@ -51,7 +51,7 @@ class StridedBatchGemm {
 
     cublas_strided_batched_gemm(
         handle, _config.m, _config.n, _config.k, &_config.alpha, &_config.beta,
-        _buffer_a, _buffer_b, output, _config.op_A, _config.op_B, stride_a,
+        _buffer_a/*A*/, _buffer_b/*B*/, output/*C*/, _config.op_A, _config.op_B, stride_a,
         stride_b, stride_c, bsz, cublasGemmAlgo_t(_config.gemm_algos[0]));
   }
 
@@ -87,8 +87,8 @@ class StridedBatchGemm {
 
     // Calculate d_B.
     cublas_strided_batched_gemm(
-        handle, _config.k, _config.n, _config.m, &_config.alpha, &_config.beta,
-        _buffer_a, d_output, inpGradB, op_a, CUBLAS_OP_N, stride_a, stride_b,
+        handle, _config.k/*m*/, _config.n/*n*/, _config.m/*k*/, &_config.alpha, &_config.beta,
+        _buffer_a/*A*/, d_output/*B*/, inpGradB/*C*/, op_a/*OpA*/, CUBLAS_OP_N/*OpB*/, stride_a, stride_b,
         stride_c, bsz, cublasGemmAlgo_t(_config.gemm_algos[2]));
   }
 
