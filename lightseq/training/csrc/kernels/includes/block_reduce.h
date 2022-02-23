@@ -73,9 +73,9 @@ __inline__ __device__ void warpReduce<ReduceType::kMax, 2>(float *pval) {
 
 template <>
 __inline__ __device__ void warpReduce<ReduceType::kSum, 1>(float *pval) {
-  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 16, 32);
-  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 8, 32);
-  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 4, 32);
+  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 16, 32);//BTBT 见 [https://zhuanlan.zhihu.com/p/203648521]
+  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 8, 32);//__shfl_xor_sync()通过对调用者的通道ID与laneMask进行按位异或（XOR）运算来计算源通道ID。返回值为计算所得源通道中的var值。此模式实现了蝶形寻址模式。
+  *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 4, 32);//mask=WARP_REDUCE_MASK=0xffffffff表示warp内所有线程都是活跃线程, val=*pval, laneMask=4, width=32=warpSize
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 2, 32);
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 1, 32);
 }
@@ -129,31 +129,31 @@ template <>
 __inline__ __device__ void blockReduce<ReduceType::kSum, 1>(float *pval) {
   const int num = 1;
   static __shared__ float shared[num][32];
-  int lane_id = threadIdx.x & 0x1f;
-  int wid = threadIdx.x >> 5;
+  int lane_id = threadIdx.x & 0x1f;//BTBT 十六进制0x1f=31,这里的意思是模32
+  int wid = threadIdx.x >> 5;//BTBT 2的5次方=32,这里是除以32, 这里可理解为求warpId
 
   warpReduce<ReduceType::kSum, num>(pval);
 
   if (lane_id == 0) {
 #pragma unroll
     for (int i = 0; i < num; ++i) {
-      shared[i][wid] = *(pval + i);
+      shared[i][wid] = *(pval + i);//把blk内每个warp做allReduce得到的值保存到share mem相应的位置[wid]上
     }
   }
   __syncthreads();
 
-  if (threadIdx.x < (blockDim.x >> 5)) {
+  if (threadIdx.x < (blockDim.x >> 5)) {//该blk能分成的warp数目就是'blockDim.x >> 5',这里是以blk内threaIdx==warpId的thread作为对应的warp的reduce值的处理者,对应的pval的值为对应的warp做reduce后的结果
 #pragma unroll
     for (int i = 0; i < num; ++i) {
       *(pval + i) = shared[i][lane_id];
     }
-  } else {
+  } else {//threadIdx!=warpId的对应的pval为0
 #pragma unroll
     for (int i = 0; i < num; ++i) {
       *(pval + i) = 0.f;
     }
   }
-  warpReduce<ReduceType::kSum, num>(pval);
+  warpReduce<ReduceType::kSum, num>(pval);//该操作后,该blk中threadIdx==warpId的thread中的pval就是blk中各个thread的pval的allReduce结果了
 }
 
 template <>

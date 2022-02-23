@@ -36,9 +36,9 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
   int batch_id = blockIdx.y;
   int head_id = blockIdx.z;
   const int nhead = gridDim.z;
-  const int token_per_reduce = 1;
+  const int token_per_reduce = 1;//BTBT 每个thread处理token_per_reduce个tkn中的ele_per_thread个元素
   typedef cub::BlockLoad<T, block_dim, ele_per_thread,
-                         cub::BLOCK_LOAD_VECTORIZE>
+                         cub::BLOCK_LOAD_VECTORIZE>//BTBT ??? cub会不会帮忙解决掉向量变量除不尽的问题?
       BlockLoad;
   __shared__ typename BlockLoad::TempStorage ts_load;
   typedef cub::BlockStore<T, block_dim, ele_per_thread,
@@ -97,7 +97,7 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
     for (int i = 0; i < token_per_reduce; i++) {
       l_sum[i] = 0.f;
       for (int j = 0; j < ele_per_thread; j++) {
-        val[i][j] = __expf(val[i][j] - s_max[i]);
+        val[i][j] = __expf(val[i][j] - s_max[i]);//BTBT ??? 减max避免溢出
         l_sum[i] += val[i][j];
       }
     }

@@ -99,7 +99,7 @@ class Decoder {
   _DataType* _p_d_query_buf1;/* BTBT 用于attn的query buf [max_batch_size*beam_size*hidden_size] */
   _DataType* _p_d_query_buf2;/* BTBT 用于ffw的query buf [max_batch_size*beam_size*max(hidden_size, inner_size)] */
   _DataType* _p_d_c;/*BTBT correlation(attention score) buffer [max_batch_size*beam_size*head_num*max_step] */
-  _DataType* _p_d_encoder_out_buf;
+  _DataType* _p_d_encoder_out_buf;/*BTBT 暂存对ecd的output进行处理的结果  [batch_size, batch_seq_len, layer_num, 2, hidSz]*/
   _DataType* _p_d_logit_buf;
 
   int _batch_size;

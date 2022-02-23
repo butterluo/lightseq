@@ -45,7 +45,7 @@ Decoder<OpType_>::Decoder(int max_batch_size, const int* p_d_padding_mask,
       _logit_scaler(_tw._no_scale_embedding ? 1.f
                                             : sqrt(1.f / tw._hidden_size)),
       _h_alive_seq_probs(max_batch_size * tw._beam_size,
-                         min_log_probability / 2),//BTBT ??? 为何这里把值初始化为(min_log_probability / 2),下三行又把每个beam sz开始值初始化为0
+                         min_log_probability / 2),//BTBT ??? 为何这里把值初始化为(min_log_probability / 2),下三行又把每个beam sz开始值初始化为0. min_log_probability在trsf..Kernel.h中,为-2000f
       _h_length_norm(tw._max_step, 1.f),
       _h_unfinished(1) {
   for (int i = 0; i < _h_alive_seq_probs.size(); i += tw._beam_size) {
@@ -53,7 +53,7 @@ Decoder<OpType_>::Decoder(int max_batch_size, const int* p_d_padding_mask,
   }
   if (tw._length_penalty >= 0) {
     for (int i = 0; i < _h_length_norm.size(); i++) {
-      _h_length_norm[i] = length_norm(i + 1, tw._length_penalty);
+      _h_length_norm[i] = length_norm(i + 1, tw._length_penalty);//length_penalty越大,length_norm随seqLen变小的幅度越大
     }
   }
   return;
@@ -251,6 +251,32 @@ std::string Decoder<OpType_>::check() {
 
 /**
 Decoder inference
+ength_penalty==0&& diverse_lambda == 0时的情况:
+  _p_d_alive_seq_probs在run_one_infer()中被初始化为[maxBatchSz*beamSz],除了beam首位0其它都是-1000,使得每个样本刚开始默认选beam[0]做result
+  beam_search()update_new_seq_probs()select_beam_rough_topk() 
+    根据每个step的_p_d_alive_seq_probs累计设置_p_d_can_score
+    topk的选择由topk的logit的候选人组成,但每个beam的topk候选人的分数是累计了该beam历史分数和该候选人当前sftMx后的分数所得
+    _p_d_can_score中的候选人分数加上了以batch中的样本id为因子的惩罚,以在排序时不同样本的所有beam的候选人能凑在一起各自排序
+    _p_d_can_idx中的idx编码了vocab_id以及该候选人原本的所属beam的id,因为一旦按分数排序,同一样本的不同beam的候选人有可能会乱排
+  beam_search()ker_refresh_result()  
+    _p_d_alive_seq会设置为_p_d_can_idx中最优候选人的vocab_id. topN候选人所属的beam的每个历史step的vocabId也会复制到第N个beam上.
+    _p_d_alive_seq中的各样本各beam按当前step计算得到的各候选人累计得分进行了从大到小的重新排序
+    _p_d_alive_seq_probs 中某beam会设为_p_d_can_score中该beam的最优候选人得分(去掉batchId offset score和diverse_lambda score)
+    根据_p_d_can_idx当候选人的vocab_id==end_id时将_p_d_can_score某beam的最优候选人设置到_p_d_alive_seq_score(去掉diverse_lambda score,保留batchId offset score供ker_write_trg_tokenid_neg_penalty对比分数时区分batch中不同样本???好像用不到)
+  beam_search()ker_refresh_cache_launcher()由于_p_d_alive_seq
+    中的各样本各beam已重新排序,所以各beam每个step对应的vocabId(tknId)所对应的transformer中的kv也应该按_p_d_alive_seq中的顺序进行互换
+  run_one_infer()->ker_write_trg_tokenid_neg_penalty() 选择最优top 1 beam, 由每个beam的_p_d_alive_seq_score决定
+diverse_lambda != 0 的情况:
+  在select_beam_rough_topk()中会在_p_d_can_score 上加入基于beamId的分数offset, 使得在排序时按同一beam中的不同候选人进行排序
+  ker_diverse_beam_search()
+    把候选人的_p_d_can_score 的beamId offset score减去,并加上batchId(样本) offset score以便后续按同一样本不同beam的候选人混合排名
+    在候选人的_p_d_can_score加上按该候选人在其所在beam排名做的惩罚,惩罚越大不同排名的候选人间的分数区分得越开,使得后续按同一样本不同beam混合排名时,在所属beam中排前的候选人也倾向排前面.
+    把候选人在它所在beam中的排名编码进_p_d_can_idx中
+  ker_refresh_result()中把候选人用于排名的分数回复成真实分数
+length_penalty>=0时
+  _h_length_norm默认1时不改变候选人得分,
+  当length_penalty>=0时生效: length_penalty越大,length_norm随seqLen变小的幅度越大
+
 */
 template <OperationType OpType_>
 void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
@@ -301,10 +327,10 @@ void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
                                         _stream>>>(
         _p_d_alive_seq, _p_d_alive_seq_score, _p_d_result, _tw._max_step,
         _tw._beam_size);
-  } else {
+  } else {//_length_penalty<0时不生效,当_cur_step != _batch_max_decode_length表示每个beam都生成了eos以结束
     ker_write_trg_tokenid_neg_penalty<<<_batch_size, _cur_step + 1, 0,
                                         _stream>>>(
-        _p_d_alive_seq, _p_d_alive_seq_score, _p_d_result, _tw._max_step,
+        _p_d_alive_seq, _p_d_alive_seq_score, _p_d_result, _tw._max_step, //???如何计算_p_d_alive_seq_score
         _tw._beam_size, _tw._trg_vocab_size, _tw._end_id);
   }
 #ifdef DEBUG_RESULT
@@ -320,7 +346,7 @@ Project encoder output
 */
 template <OperationType OpType_>
 void Decoder<OpType_>::project_encoder_output() {
-  int kv_dim = _tw._hidden_size * 2 * _tw._n_dec_layer; //BTBT 把所有layer的cross attn计算所需的k,v用cublasGemmEx先算出来,保存在_p_d_encoder_out_buf
+  int kv_dim = _tw._hidden_size * 2 * _tw._n_dec_layer; //BTBT 这里增加了内存开销. 把所有layer的cross attn计算所需的k,v用cublasGemmEx先算出来,保存在_p_d_encoder_out_buf
 #ifdef DEBUG_RESULT
   CHECK_GPU_ERROR(cudaStreamSynchronize(_stream));
   print_vec(_p_d_encoder_output, "_p_d_encoder_output(head):", 5);
@@ -330,7 +356,7 @@ void Decoder<OpType_>::project_encoder_output() {
 #endif
   CHECK_GPU_ERROR(cublasGemmEx(
       _hd, CUBLAS_OP_N, CUBLAS_OP_N, kv_dim, _batch_token_num, _tw._hidden_size,
-      &_type_one, _p_d_trg_emb_wei[4], _AType, kv_dim, _p_d_encoder_output, //BTBT _p_d_trg_emb_wei[4]是enc_out_kernel_kv
+      &_type_one, _p_d_trg_emb_wei[4], _AType, kv_dim, _p_d_encoder_output, //BTBT _p_d_trg_emb_wei[4]是enc_out_kernel_kv,为了使得实际计算时不用CUBLAS_OP_T做转置,在导出参数时先做了转置再导出, 所以此处是转置后的列主导的
       _BType, _tw._hidden_size, &_type_zero, _p_d_encoder_out_buf, _CType,
       kv_dim, _computeType, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   // _p_d_encoder_out_buf: [batch_size, batch_seq_len, layer_num, 2,
@@ -347,7 +373,7 @@ void Decoder<OpType_>::project_encoder_output() {
       _batch_token_num, _tw._n_dec_layer, _tw._hidden_size, _stream,
       _p_d_encoder_out_buf, _p_d_trg_emb_wei[5], _p_d_encdec_k_bgeem[0],// _p_d_encdec_k_bgeem, _p_d_encdec_v_bgeem ctrl有注释,保存了每层计算encdec attn所需要的由encd output计算出来的kv值
       _p_d_encdec_v_bgeem[0], _layer_size_encdec_k, _batch_seq_len,
-      _tw._dim_per_head, _tw._head_num, _max_thread_per_block);
+      _tw._dim_per_head, _tw._head_num, _max_thread_per_block);//把[batch_size, batch_seq_len, dec_layer_num, 2, hidden_size]加上bias( _p_d_trg_emb_wei[5])并转成_p_d_encdec_k_bgeem([batch_size, head_num, batch_seq_len, dim_per_head] per layer)和_p_d_encdec_v_bgeem([batch_size, head_num, batch_seq_len, dim_per_head] per layer)
   return;
 }
 
@@ -713,7 +739,7 @@ bool Decoder<OpType_>::beam_search() {
   update_new_seq_probs();
 
   /* ---step 2. sort the candidate with their probability--- */
-  CHECK_GPU_ERROR(cudaMemcpyAsync(&_h_can_num_batch, _p_d_can_num, sizeof(int),//BTBT _p_d_can_num指向的第一个数是该step该batch中所有beam所找到的topK数值的总个数
+  CHECK_GPU_ERROR(cudaMemcpyAsync(&_h_can_num_batch, _p_d_can_num, sizeof(int),//BTBT _p_d_can_num指向的第一个数是该step该batch中所有beam所找到的topK候选人的总个数
                                   cudaMemcpyDeviceToHost, _stream));
   CHECK_GPU_ERROR(cudaStreamSynchronize(_stream));
   if (_tw._diverse_lambda != 0) {
@@ -723,8 +749,8 @@ bool Decoder<OpType_>::beam_search() {
           _p_d_can_score, _p_d_can_idx, _p_d_can_idx, _h_can_num_batch, 0,
           sizeof(float) * 8, _stream));
     } else {
-      thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score,
-                          _p_d_can_score + _h_can_num_batch, _p_d_can_idx,
+      thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score, //https://thrust.github.io/doc/group__sorting_gaec4e3610a36062ee3e3d16607ce5ad80.html#gaec4e3610a36062ee3e3d16607ce5ad80
+                          _p_d_can_score + _h_can_num_batch, _p_d_can_idx,//_p_d_can_score作为key, _p_d_can_idx作为value, 从大到小排列
                           thrust::greater<float>());
     }
     ker_diverse_beam_search_launcher(_p_d_can_score, _p_d_can_idx, _p_d_can_num,
@@ -735,7 +761,7 @@ bool Decoder<OpType_>::beam_search() {
   
   thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score,//BTBT 因在select_beam_rough_topk()中'batch_id * min_log_probability',所以这排序后batch_id(也就是该batch中各样本的顺序位置)不变,只是样本中的那几个beam对应的tkn id按score从大到小排序了
                       _p_d_can_score + _h_can_num_batch, _p_d_can_idx, //BTBT 根据 _p_d_can_score 里的key对_p_d_can_idx 进行排序
-                      thrust::greater<float>()); // 排序方法 https://thrust.github.io/doc/group__sorting_gaec4e3610a36062ee3e3d16607ce5ad80.html#gaec4e3610a36062ee3e3d16607ce5ad80
+                      thrust::greater<float>()); // 排序方法API说明同上
 
 #ifdef DEBUG_RESULT
   print_vec(_p_d_can_score, "can score", _h_can_num_batch);
@@ -746,14 +772,14 @@ bool Decoder<OpType_>::beam_search() {
     step 3. refresh alive_seq, seq_probs, seq_score, num_finish_beam
       based on sorted candidate.
       Deciding whether early stop based on num_finish_beam
-  *///BTBT ??? 若diverse_lambda==0,每个beam只选择top1分数的候选
-  CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));
+  */
+  CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));//BTBT ??? 若diverse_lambda==0,每个beam只选择top1分数的候选
   ker_refresh_result<<<dim3(_batch_size, _tw._beam_size), _tw._max_step, 0,
                        _stream>>>(
       _p_d_can_idx, _p_d_can_score, _p_d_can_num + 1, _p_d_alive_seq/*old_alive_seq*/,
-      _p_d_alive_seq_buf/*new_alive_seq*/, _p_d_alive_seq_probs, _p_d_alive_seq_score,//??? p_d_alive_seq_score只有遇到trg_end_id才更新?
+      _p_d_alive_seq_buf/*new_alive_seq*/, _p_d_alive_seq_probs, _p_d_alive_seq_score,//??? p_d_alive_seq_score只有遇到trg_end_id才更新?并且依然带有'batch offset value'
       _p_d_can_num, _tw._trg_vocab_size, _cur_step, _h_length_norm[_cur_step],
-      _tw._diverse_lambda, _tw._end_id);
+      _tw._diverse_lambda, _tw._end_id);//此时输出的_p_d_can_num[0]中是'结束了的beam的个数'
   int* tmp = _p_d_alive_seq_buf;
   _p_d_alive_seq_buf = _p_d_alive_seq;
   _p_d_alive_seq = tmp;
@@ -783,7 +809,7 @@ bool Decoder<OpType_>::beam_search() {
 
   /* ---step 4. refresh cache: k, v for decoder self attention--- */
   if (_cur_step > 0) {
-    ker_refresh_cache_launcher<_DataType>(
+    ker_refresh_cache_launcher<_DataType>(//BTBT 由于在ker_refresh_result()中已经把_p_d_alive_seq中的各样本各beam按当前step计算得到的各候选人累计得分进行了从大到小的重新排序,所以各beam每个step对应的vocabId(tknId)所对应的transformer中的kv也应该按_p_d_alive_seq中的顺序进行互换,ker_refresh_cache_launcher()就是做相应的不同beam对应的kv的交换的
         _tw._n_dec_layer * (_cur_step + 1) /*grid_dim_x*/ , _step_token_num * 2 /*grid_dim_y*/,
         _max_thread_per_block /*block_dim*/, _stream, _p_d_can_num + 1, _p_d_can_idx,
         _p_d_self_k_bgeem1[0]/*self_k_bgeem*/, _p_d_self_v_bgeem1[0], _p_d_self_k_bgeem2[0]/*new_self_k_bgeem*/,
@@ -810,14 +836,14 @@ void Decoder<OpType_>::update_new_seq_probs() {
   CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));
 
   select_beam_rough_topk_launcher(
-      _p_d_logit_buf, _p_d_trg_emb_wei[6], _p_d_alive_seq_probs,//???_p_d_alive_seq_probs和_p_d_alive_seq_score的作用与更新机制
+      _p_d_logit_buf, _p_d_trg_emb_wei[6]/*logit_bias*/, _p_d_alive_seq_probs,//???_p_d_alive_seq_probs和_p_d_alive_seq_score的作用与更新机制
       _p_d_alive_seq_score, _p_d_alive_seq, _p_d_can_idx, _p_d_can_score,
       _p_d_can_num, _tw._trg_vocab_size, _tw._max_step,
       _h_length_norm[_cur_step], _cur_step, _step_token_num,
       _max_thread_per_block, _stream, _tw._beam_size, _tw._diverse_lambda,
       _tw._end_id);
-  thrust::exclusive_scan(thrust::cuda::par.on(_stream), _p_d_can_num + 1, https://thrust.github.io/doc/group__prefixsums_ga0f1b7e1931f6ccd83c67c8cfde7c8144.html#ga0f1b7e1931f6ccd83c67c8cfde7c8144 , https://www.cnblogs.com/carekee/articles/2409514.html
-                         _p_d_can_num + 1 + _step_token_num, _p_d_can_num + 1);//BTBT 原来_p_d_can_num保存了该batch每个beam的各个topK数目,exclusive_scan后变成了从第一个beam开始累计的topK数,也就是可直接作为查_p_d_can_idx和_p_d_can_score中候选(topK)tkn id及其分数的下标
+  thrust::exclusive_scan(thrust::cuda::par.on(_stream), _p_d_can_num + 1,  // https://thrust.github.io/doc/group__prefixsums_ga0f1b7e1931f6ccd83c67c8cfde7c8144.html#ga0f1b7e1931f6ccd83c67c8cfde7c8144 , https://www.cnblogs.com/carekee/articles/2409514.html
+                         _p_d_can_num + 1 + _step_token_num, _p_d_can_num + 1);//BTBT 原来_p_d_can_num保存了该batch每个beam的各个topK候选人总数,exclusive_scan后变成了从第一个beam开始累计的topK候选人,也就是可直接作为查_p_d_can_idx和_p_d_can_score中候选(topK)tkn id及其分数的下标 //BTBT REFACTOR ???这个貌似可以在select_beam_rough_topk_launcher()中同时做
   return;
 }
 

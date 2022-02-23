@@ -85,19 +85,19 @@ __global__ void ker_layer_norm<__half>(__half *ln_res, __half *vars,
   float l_sum = 0;
   float l_square_sum = 0;
   const float4 *inp_f4 = (const float4 *)inp + blockIdx.x * hidden_size;
-  for (uint idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
+  for (uint idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {//BTBT 每个thread处理一个tkn,若hidSz太大,需要做stride loop
     float4 val_f4 = inp_f4[idx];
     __half2 *val_h2 = (__half2 *)(&val_f4);
 #pragma unroll
     for (int i = 0; i < 4; i++) {
-      float2 val_f2 = __half22float2(val_h2[i]);
+      float2 val_f2 = __half22float2(val_h2[i]);//BTBT 这里是把half转成float处理的,(_CUPG/Performance Guidelines/Maximize Memory Throughput/Arithmetic Instructions/Half Precision Arithmetic) 提到了half专用的操作指令,用了会更快
       l_sum += val_f2.x + val_f2.y;
       l_square_sum += val_f2.x * val_f2.x + val_f2.y * val_f2.y;
     }
   }
 
   // step 1. compute reduce sum
-  float mean_dim = float(hidden_size) * 8.f;
+  float mean_dim = float(hidden_size) * 8.f;//因为用了float4和half2,做idx偏移时的hidSz是>>3了的
   float reduce_val[2] = {l_sum, l_square_sum};
   blockReduce<ReduceType::kSum, 2>(reduce_val);
   __shared__ float s_mean, s_var;
@@ -106,7 +106,7 @@ __global__ void ker_layer_norm<__half>(__half *ln_res, __half *vars,
     if (means != nullptr) {
       means[blockIdx.x] = s_mean;
     }
-    s_var = reduce_val[1] / mean_dim - s_mean * s_mean + LN_EPSILON;
+    s_var = reduce_val[1] / mean_dim - s_mean * s_mean + LN_EPSILON;//求方差没用oneflow用的Welford,而用了naive,因为bert base的hidSz是768,计算结果可接受.naive只是在N少的时候'由于 SumSquare 和 (Sum×Sum)/n 可能非常接近，可能会导致计算结果损失精度较大'
     vars[blockIdx.x] = s_var;
     s_var = rsqrtf(s_var);
   }
@@ -116,7 +116,7 @@ __global__ void ker_layer_norm<__half>(__half *ln_res, __half *vars,
   float4 *output_f4 = (float4 *)ln_res + blockIdx.x * hidden_size;
   for (uint idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
     // load scale, bias, input
-    float4 scale_f4 = __ldg((const float4 *)scale + idx);
+    float4 scale_f4 = __ldg((const float4 *)scale + idx);//__ldg()结合const和__restrict__会增加只读数据缓存在L1的概率,因为scale和bias是只读且只有hidSz大小,但每个thread都要读取,所以尽可能放在L1中
     __half2 *scale_h2 = (__half2 *)(&scale_f4);
     float4 bias_f4 = __ldg((const float4 *)bias + idx);
     __half2 *bias_h2 = (__half2 *)(&bias_f4);

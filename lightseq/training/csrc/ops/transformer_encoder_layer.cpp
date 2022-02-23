@@ -85,11 +85,11 @@ void TransformerEncoderLayer<T>::attn_layer_fw(const T *input_ptr,
   _attn_prob_dropout.dropout(_ctx_bufB_ptr, _soft_out_ptr,
                              _batch_heads * _seq_len * _seq_len, _stream);
 
-  // attention context, score * v
+  // attention context, score * v //对每个head进行score*v
   _attn_context.Forward(_batch_heads, buffer, v_tf_ptr, _ctx_bufB_ptr,
                         _cublasHandle);
 
-  // [b, nh, s, ad] -> [b, s, nh, ad]
+  // [batchSz, heads, seqLen, headDim] -> [batchSz, seqLen, heads, headDim]
   launch_transform4d_0213<T>(_attn_o_inp_ptr, buffer, _batch_size, _seq_len,
                              _hidden_size, _heads, 1, _stream);
 
