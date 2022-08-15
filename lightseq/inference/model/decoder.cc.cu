@@ -53,7 +53,7 @@ Decoder<OpType_>::Decoder(int max_batch_size, const int* p_d_padding_mask,
   }
   if (tw._length_penalty >= 0) {
     for (int i = 0; i < _h_length_norm.size(); i++) {
-      _h_length_norm[i] = length_norm(i + 1, tw._length_penalty);//length_penalty越大,length_norm随seqLen变小的幅度越大
+      _h_length_norm[i] = length_norm(i + 1, tw._length_penalty);//length_penal>=0时也是len越大,len_norm越小,只是变小的速度随len_penal的变大而加快
     }
   }
   return;
@@ -275,7 +275,7 @@ diverse_lambda != 0 的情况:
   ker_refresh_result()中把候选人用于排名的分数回复成真实分数
 length_penalty>=0时
   _h_length_norm默认1时不改变候选人得分,
-  当length_penalty>=0时生效: length_penalty越大,length_norm随seqLen变小的幅度越大
+  length_penal>=0时也是len越大,len_norm越小,只是变小的速度随len_penal的变大而加快
 
 */
 template <OperationType OpType_>
@@ -312,7 +312,7 @@ void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
   }
 
   /* ---step3. output the decoding result--- */
-  if (_output_topk || _is_sampling) {//BTBT 看了此分支_output_topk=true,_is_sampling=='beam_search'
+  if (_output_topk || _is_sampling) {//BTBT 看了此分支_output_topk=true,_is_sampling==false('beam_search')
     if (_cur_step == _batch_max_decode_length) {
       _cur_step -= 1;
     }

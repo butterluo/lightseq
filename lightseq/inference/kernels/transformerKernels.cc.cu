@@ -255,7 +255,7 @@ __global__ void ker_diverse_beam_search(float* can_score, int* can_ids,
        idx += blockDim.x) {
     atomicAdd(can_score + idx, batch_id * min_log_probability -
                                    min_log_probability * blockIdx.x - //BTBT 把can_score在select_beam_rough_topk时按beam_id(blockIdx.x)分隔的改成按batch_id(样本)分隔
-                                   diverse_lambda * (idx - can_pos + 1));//BTBT 原来的分数按该候选人在该beam中原由大到小的排名(idx-can_pos)做惩罚,因子为diverse_lambda, diverse_lambda越大排名间分数的举例就越大,这使得该beam中排第一的tkn在混合beam排名后依然接近第一
+                                   diverse_lambda * (idx - can_pos + 1));//BTBT 原来的分数按该候选人在该beam中原由大到小的排名(idx-can_pos)做惩罚,因子为diverse_lambda, diverse_lambda越大排名间分数的距离就越大,这使得该beam中排第一的tkn在混合beam排名后依然接近第一
     int ori_can_idx = can_ids[idx];  // can_beam_id * vocab_size + vocab_id
     int can_beam_id = ori_can_idx / vocab_size;
     int can_vocab_id = ori_can_idx % vocab_size;
