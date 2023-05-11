@@ -35,9 +35,9 @@ Decoder<OpType_>::Decoder(int max_batch_size, const int* p_d_padding_mask,
       _hd(hd),
       _output_topk(output_topk),
       _p_d_lang_id(p_d_lang_id),  // source token id
-      _layer_size_encdec_k(max_batch_size * tw._max_step * tw._hidden_size),
+      _layer_size_encdec_k(max_batch_size * tw._max_step * tw._hidden_size),//BTBT h有注释:每层所需的由encd out得到的k矩阵的最大神经元个数:(max_batch_size * max_step * hidden_size)
       _layer_size_self_k(max_batch_size * tw._max_step * tw._hidden_size *
-                         tw._beam_size),
+                         tw._beam_size),//BTBT h有注释:每层所需的由decd out得到的k矩阵的最大神经元个数:(max_batch_size*max_step*hidden_size*beam_size)
       _type_one(1.f),
       _type_zero(0.f),
       _fzero(0.f),
@@ -174,7 +174,7 @@ void Decoder<OpType_>::init_buffer(void* pbuf) {
   int* pint = reinterpret_cast<int*>(fcurp);
   // FIXME
   std::vector<int> start_id_vec(
-      _max_batch_size * _tw._beam_size * _tw._max_step * 2, _tw._start_id);//BTBT 用于初始化 _p_d_alive_seq 和 _p_d_alive_seq_buf,初始值为ModelConf.trg_start_id,即target seq的开始标记
+      _max_batch_size * _tw._beam_size * _tw._max_step * 2, _tw._start_id);//BTBT 用于初始化 _p_d_alive_seq 和 _p_d_alive_seq_buf,初始值为 ModelConf.trg_start_id,即 target seq 的开始标记
   usleep(3000);
   CHECK_GPU_ERROR(cudaMemcpyAsync(pint, start_id_vec.data(),
                                   sizeof(int) * start_id_vec.size(),
@@ -185,9 +185,9 @@ void Decoder<OpType_>::init_buffer(void* pbuf) {
   // after finishing current step's search, we will copy the first one
   // to the second one to refresh beam_search cache
   // based on the selected beam id
-  _p_d_alive_seq = pint;
+  _p_d_alive_seq = pint;//BTBT h的注释:初始化或生成的target tokn [max_batch_size*beam_size*max_step]在init_buffer()中通过start_id_vec初始化为trg_start_id
   pint += _max_batch_size * _tw._beam_size * _tw._max_step;
-  _p_d_alive_seq_buf = pint;
+  _p_d_alive_seq_buf = pint;//BTBT h的注释:与上面的 _p_d_alive_seq 形成pingpong buf或双buf
   pint += _max_batch_size * _tw._beam_size * _tw._max_step;
 
   // candidate token id for every beam, selected by rough top-beam_size op
@@ -250,32 +250,32 @@ std::string Decoder<OpType_>::check() {
 }
 
 /**
-Decoder inference
+Decoder inference 的 beamSearch
 ength_penalty==0&& diverse_lambda == 0时的情况:
-  _p_d_alive_seq_probs在run_one_infer()中被初始化为[maxBatchSz*beamSz],除了beam首位0其它都是-1000,使得每个样本刚开始默认选beam[0]做result
+  _p_d_alive_seq_probs[maxBatchSz*beamSz]在 run_one_infer()中被 _h_alive_seq_probs 初始化为,除了第一个beam为0其它都是-1000,使得每个样本刚开始默认选beam[0]做result
   beam_search()update_new_seq_probs()select_beam_rough_topk() 
-    根据每个step的_p_d_alive_seq_probs累计设置_p_d_can_score
-    topk的选择由topk的logit的候选人组成,但每个beam的topk候选人的分数是累计了该beam历史分数和该候选人当前sftMx后的分数所得
-    _p_d_can_score中的候选人分数加上了以batch中的样本id为因子的惩罚,以在排序时不同样本的所有beam的候选人能凑在一起各自排序
-    _p_d_can_idx中的idx编码了vocab_id以及该候选人原本的所属beam的id,因为一旦按分数排序,同一样本的不同beam的候选人有可能会乱排
+    根据每个step的 _p_d_alive_seq_probs 累计设置 _p_d_can_score
+    topk的选择由topk的logit的候选人组成,但每个beam的topk候选人的分数是累计了该beam历史分数和该候选人当前sftMx后的分数所得//BTBT ??? 如何累计
+    _p_d_can_score 中的候选人分数加上了以batch中的样本id为因子的惩罚,以在排序时不同样本的所有beam的候选人能凑在一起各自排序
+    _p_d_can_idx 中的idx编码了vocab_id以及该候选人原本的所属beam的id,因为一旦按分数排序,同一样本的不同beam的候选人有可能会乱排
   beam_search()ker_refresh_result()  
-    _p_d_alive_seq会设置为_p_d_can_idx中最优候选人的vocab_id. topN候选人所属的beam的每个历史step的vocabId也会复制到第N个beam上.
-    _p_d_alive_seq中的各样本各beam按当前step计算得到的各候选人累计得分进行了从大到小的重新排序
-    _p_d_alive_seq_probs 中某beam会设为_p_d_can_score中该beam的最优候选人得分(去掉batchId offset score和diverse_lambda score)
-    根据_p_d_can_idx当候选人的vocab_id==end_id时将_p_d_can_score某beam的最优候选人设置到_p_d_alive_seq_score(去掉diverse_lambda score,保留batchId offset score供ker_write_trg_tokenid_neg_penalty对比分数时区分batch中不同样本???好像用不到)
+    _p_d_alive_seq 会设置为 _p_d_can_idx 中最优候选人的vocab_id. topN候选人所属的beam的每个历史step的vocabId也会复制到第N个beam上.
+    _p_d_alive_seq 中的各样本各beam按当前step计算得到的各候选人累计得分进行了从大到小的重新排序
+    _p_d_alive_seq_probs 中某beam会设为 _p_d_can_score 中该beam的最优候选人得分(去掉batchId offset score和diverse_lambda score)
+    根据 _p_d_can_idx 当候选人的vocab_id==end_id时将 _p_d_can_score 某beam的最优候选人设置到 _p_d_alive_seq_score (去掉diverse_lambda score,保留batchId offset score供ker_write_trg_tokenid_neg_penalty对比分数时区分batch中不同样本???好像用不到)
   beam_search()ker_refresh_cache_launcher()由于_p_d_alive_seq
-    中的各样本各beam已重新排序,所以各beam每个step对应的vocabId(tknId)所对应的transformer中的kv也应该按_p_d_alive_seq中的顺序进行互换
-  run_one_infer()->ker_write_trg_tokenid_neg_penalty() 选择最优top 1 beam, 由每个beam的_p_d_alive_seq_score决定
+    中的各样本各beam已重新排序,所以各beam每个step对应的vocabId(tknId)所对应的transformer中的kv也应该按 _p_d_alive_seq 中的顺序进行互换
+  run_one_infer()->ker_write_trg_tokenid_neg_penalty() 选择最优top 1 beam, 由每个beam的 _p_d_alive_seq_score 决定
 diverse_lambda != 0 的情况:
-  在select_beam_rough_topk()中会在_p_d_can_score 上加入基于beamId的分数offset, 使得在排序时按同一beam中的不同候选人进行排序
+  在 select_beam_rough_topk()中会在_p_d_can_score 上加入基于beamId的分数offset, 使得在排序时按同一beam中的不同候选人进行排序
   ker_diverse_beam_search()
-    把候选人的_p_d_can_score 的beamId offset score减去,并加上batchId(样本) offset score以便后续按同一样本不同beam的候选人混合排名
-    在候选人的_p_d_can_score加上按该候选人在其所在beam排名做的惩罚,惩罚越大不同排名的候选人间的分数区分得越开,使得后续按同一样本不同beam混合排名时,在所属beam中排前的候选人也倾向排前面.
-    把候选人在它所在beam中的排名编码进_p_d_can_idx中
+    把候选人的 _p_d_can_score 的beamId offset score减去,并加上batchId(样本) offset score以便后续按同一样本不同beam的候选人混合排名
+    在候选人的 _p_d_can_score 加上按该候选人在其所在beam排名做的惩罚,惩罚越大不同排名的候选人间的分数区分得越开,使得后续按同一样本不同beam混合排名时,在所属beam中排前的候选人也倾向排前面.
+    把候选人在它所在beam中的排名编码进 _p_d_can_idx 中
   ker_refresh_result()中把候选人用于排名的分数回复成真实分数
 length_penalty>=0时
-  _h_length_norm默认1时不改变候选人得分,
-  length_penal>=0时也是len越大,len_norm越小,只是变小的速度随len_penal的变大而加快
+  _h_length_norm 默认1时不改变候选人得分,
+  length_penalty>=0时也是len越大,len_norm越小,只是变小的速度随len_penal的变大而加快
 
 */
 template <OperationType OpType_>
@@ -286,7 +286,7 @@ void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
   _batch_token_num = batch_size * batch_seq_len;
   _step_token_num = batch_size * _tw._beam_size;
   _batch_max_decode_length =
-      min(_tw._max_step, batch_seq_len + _tw._extra_decode_length) - 1; //BTBT batch_seq_len??? 为何减1,为了去掉标识句子开头tkn的长度??? _batch_max_decode_length??? //_extra_decode_length表示要在src seq len的基础上顶多再生成(翻译)出多几个target tkn的个数
+      min(_tw._max_step, batch_seq_len + _tw._extra_decode_length) - 1; //BTBT batch_seq_len??? 为何减1,为了去掉标识句子开头tkn的长度??? //_extra_decode_length 表示要在src seq len的基础上顶多再生成(翻译)出多几个target tkn的个数
   _is_sampling =
       (_tw._sampling_method == "topk" || _tw._sampling_method == "topp" ||
        _tw._sampling_method == "topk_greedy");
@@ -294,7 +294,7 @@ void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
     _batch_max_decode_length = _tw._max_step;
   }
 
-  project_encoder_output();  // project encoder output
+  project_encoder_output();  // project encoder output //BTBT TOREFACTOR 这个可以用 multi stream + event 与emb和第一次的selfAttn做并行
   // init the first step's token id with target start_id
   CHECK_GPU_ERROR(cudaMemcpyAsync(_p_d_alive_seq_probs,
                                   _h_alive_seq_probs.data(),  //BTBT ??? _h_alive_seq_probs貌似只用于这里对_p_d_alive_seq_probs的值初始化
@@ -345,8 +345,8 @@ void Decoder<OpType_>::run_one_infer(int batch_size, int batch_seq_len) {
 Project encoder output 
 */
 template <OperationType OpType_>
-void Decoder<OpType_>::project_encoder_output() {
-  int kv_dim = _tw._hidden_size * 2 * _tw._n_dec_layer; //BTBT 这里增加了内存开销. 把所有layer的cross attn计算所需的k,v用cublasGemmEx先算出来,保存在_p_d_encoder_out_buf
+void Decoder<OpType_>::project_encoder_output() {//BTBT TOREFACTOR 用cutls把这里的两个kernel合成一个
+  int kv_dim = _tw._hidden_size * 2 * _tw._n_dec_layer; //BTBT TOREFACTOR 这可以提前算并保存. 
 #ifdef DEBUG_RESULT
   CHECK_GPU_ERROR(cudaStreamSynchronize(_stream));
   print_vec(_p_d_encoder_output, "_p_d_encoder_output(head):", 5);
@@ -355,12 +355,12 @@ void Decoder<OpType_>::project_encoder_output() {
   print_vec(_p_d_trg_emb_wei[4], "encoder project(head):", 10);
 #endif
   CHECK_GPU_ERROR(cublasGemmEx(
-      _hd, CUBLAS_OP_N, CUBLAS_OP_N, kv_dim, _batch_token_num, _tw._hidden_size,
-      &_type_one, _p_d_trg_emb_wei[4], _AType, kv_dim, _p_d_encoder_output, //BTBT _p_d_trg_emb_wei[4]是enc_out_kernel_kv,为了使得实际计算时不用CUBLAS_OP_T做转置,在导出参数时先做了转置再导出, 所以此处是转置后的列主导的
-      _BType, _tw._hidden_size, &_type_zero, _p_d_encoder_out_buf, _CType,
-      kv_dim, _computeType, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+      _hd, CUBLAS_OP_N, CUBLAS_OP_N, kv_dim, _batch_token_num, _tw._hidden_size, //m,n,k
+      &_type_one/*alpha*/, _p_d_trg_emb_wei[4], _AType, kv_dim/*lda*/, _p_d_encoder_output, //BTBT _p_d_trg_emb_wei[4]是enc_out_kernel_kv,为了使得实际计算时不用CUBLAS_OP_T做转置,在导出参数时先做了转置再导出, 所以此处是转置后的列主导的
+      _BType, _tw._hidden_size/*ldb*/, &_type_zero/*beta*/, _p_d_encoder_out_buf, _CType,
+      kv_dim/*ldc*/, _computeType, CUBLAS_GEMM_DEFAULT_TENSOR_OP));//把所有layer的cross attn计算所需的k,v用cublasGemmEx先算出来,保存在 _p_d_encoder_out_buf
   // _p_d_encoder_out_buf: [batch_size, batch_seq_len, layer_num, 2,
-  // hidden_size]
+  // hidden_size] //BTBT TOREFACTOR _p_d_encoder_out_buf貌似只在该方法内作为保存中间结果用,能否去掉???但貌似依赖于能否把本方法的两个kernel合成一个
 
 #ifdef DEBUG_RESULT
   CHECK_GPU_ERROR(cudaStreamSynchronize(_stream));
@@ -371,10 +371,10 @@ void Decoder<OpType_>::project_encoder_output() {
 #endif
   ker_arrange_encdec_kv_launcher<_DataType>(//BTBT _p_d_trg_emb_wei[5]是enc_out_bias_kv,这里是把bias加到上面矩阵相乘得到的cros attn所需的kv值上
       _batch_token_num, _tw._n_dec_layer, _tw._hidden_size, _stream,
-      _p_d_encoder_out_buf, _p_d_trg_emb_wei[5], _p_d_encdec_k_bgeem[0],// _p_d_encdec_k_bgeem, _p_d_encdec_v_bgeem ctrl有注释,保存了每层计算encdec attn所需要的由encd output计算出来的kv值
+      _p_d_encoder_out_buf/*kv_dim*_batch_token_num*/, _p_d_trg_emb_wei[5], _p_d_encdec_k_bgeem[0],// _p_d_encdec_k_bgeem, _p_d_encdec_v_bgeem ctrl有注释,保存了每层计算encdec attn所需要的由encd output计算出来的kv值,每层的kv值只在计算该层的encdec_attention()时用到
       _p_d_encdec_v_bgeem[0], _layer_size_encdec_k, _batch_seq_len,
-      _tw._dim_per_head, _tw._head_num, _max_thread_per_block);//把[batch_size, batch_seq_len, dec_layer_num, 2, hidden_size]加上bias( _p_d_trg_emb_wei[5])并转成_p_d_encdec_k_bgeem([batch_size, head_num, batch_seq_len, dim_per_head] per layer)和_p_d_encdec_v_bgeem([batch_size, head_num, batch_seq_len, dim_per_head] per layer)
-  return;
+      _tw._dim_per_head, _tw._head_num, _max_thread_per_block);//把[batch_size, batch_seq_len, dec_layer_num, 2, hidden_size]加上bias( _p_d_trg_emb_wei[5])并转成 _p_d_encdec_k_bgeem([batch_size, head_num, batch_seq_len, dim_per_head] per layer)和_p_d_encdec_v_bgeem([batch_size, head_num, batch_seq_len, dim_per_head] per layer)
+  return;//BTBT *** ker_arrange_encdec_kv_launcher告诉我们,访问vector _p_d_encdec_k_bgeem和_p_d_encdec_v_bgeem的不同元素时竟然可以用裸指针
 }
 
 /**
@@ -422,12 +422,12 @@ bool Decoder<OpType_>::run_step() {
 Decode embedding
 */
 template <OperationType OpType_>
-void Decoder<OpType_>::embedding() {
+void Decoder<OpType_>::embedding() {//BTBT TOREFACTOR 当step=0时,_p_d_alive_seq 对应step的tok肯定是target lang的start id(bos),而给到 _p_d_cur_step_query 肯定是(该bos对应的emb) + (position 0 emb) + (target lang type emb 或 tok typ emb),所以可以在构造函数提前初始化好,就不用在step=0时调该函数了
   // _p_d_trg_emb_wei: {token_emb, position_emb, norm_scale, norm_bias,
   // enc_out_kernel_kv, enc_out_bias_kv, logit_bias} //BTBT 当_tw._multilg_type == 0时,只有两种lang type,此时没有_p_d_trg_emb_wei[7]; _tw._multilg_type != 0 时 _p_d_trg_emb_wei[7] 里面是lang type emb,也可做tkn typ emb
   launch_dec_emb<_DataType>(_p_d_trg_emb_wei[0], _p_d_trg_emb_wei[1],
-                            _p_d_alive_seq, _p_d_trg_emb_wei[7], _p_d_lang_id, //当_tw._multilg_type == 0时,_p_d_lang_id为nullptr,其它情况要指定target emb对应的tkn tye 类型
-                            _p_d_cur_step_query, _batch_size, _tw._beam_size, //BTBT _p_d_cur_step_query作为emb的output,用于attn的Query,只处理当前_cur_step对应的那个emb
+                            _p_d_alive_seq/*[max_batch_size*beam_size*max_step]初始值全bos*/, _p_d_trg_emb_wei[7], _p_d_lang_id, //当_tw._multilg_type == 0时,_p_d_lang_id为nullptr,其它情况要指定target emb对应的tkn tye 类型
+                            _p_d_cur_step_query, _batch_size, _tw._beam_size, //BTBT _p_d_cur_step_query 作为emb的output,用于attn的Query,只处理当前_cur_step对应的那个emb
                             _tw._hidden_size, _tw._trg_vocab_size, _cur_step,
                             _tw._max_step, _tw._multilg_type, _stream);
 #ifdef DEBUG_RESULT
@@ -492,8 +492,8 @@ void Decoder<OpType_>::self_attention() {
 
   /* ---step 1. qkv = ori_q * qkv_wei + bias, and reshape qkv for multi-head
    * gemm--- */
-  CHECK_GPU_ERROR(cublasGemmEx(//BTBT ??? 只把当前step的q扩展为qkv
-      _hd, CUBLAS_OP_N, CUBLAS_OP_N, _tw._hidden_size * 3, _step_token_num,
+  CHECK_GPU_ERROR(cublasGemmEx(//BTBT TOREFACTOR 只把当前step的q扩展为qkv. m=_hidden_size*3, n=_step_token_num=batchSz*beamSz, k=_hidden_size, 做infer时一般n会比m小很多,n也会比k小,即B比A小很多, 要针对这种情况做优化???
+      _hd, CUBLAS_OP_N, CUBLAS_OP_N, _tw._hidden_size * 3, _step_token_num/*batch_size*beam_size*/,
       _tw._hidden_size, &_type_one, _p_d_dec_wei[_weight_offset + 2]/*self_project_kernel_qkv*/, _AType,
       _tw._hidden_size * 3, _p_d_query_buf1, _BType, _tw._hidden_size,
       &_type_zero, _p_d_self_step_qkv, _CType, _tw._hidden_size * 3,
@@ -505,11 +505,11 @@ void Decoder<OpType_>::self_attention() {
             "self qkv(tail): ", 5);
 #endif
   //BTBT 计算当前step的qkv+bias,并分割成_p_d_query_buf1(qOfCurrentStep),_p_d_self_k_bgeem1[_layer_id](kOfCurrentStepAndHistoryStep)_p_d_self_v_bgeem1也是包含历史step(虽然该方法只处理当前step)
-  // get q, k, v by split and reshape qkv
+  // get q, k, v by split and reshape qkv //BTBT ft是把从这里往下的3个kernel都合成一个FMHA了,因此不用做ker_arrange_decself_qkv_launcher的数据腾挪以及不用launch这么多次,也不用把kv pad到cur_step而多计算几次. ???但crosAttn也用FMHA有点存疑,因为decd的crosAttn还是挺规整的,没有不同example的seqLen不同的问题
   ker_arrange_decself_qkv_launcher<_DataType>(
-      _step_token_num, _tw._hidden_size, _stream, _p_d_self_step_qkv,
-      _p_d_dec_wei[_weight_offset + 3]/*self_project_bias_qkv*/, _p_d_query_buf1,/*new_q*/
-      _p_d_self_k_bgeem1[_layer_id]/*new_k*/, _p_d_self_v_bgeem1[_layer_id],/*new_v*/
+      _step_token_num, _tw._hidden_size, _stream, _p_d_self_step_qkv/*ori_qkv*/,
+      _p_d_dec_wei[_weight_offset + 3]/*self_project_bias_qkv*/, _p_d_query_buf1/*new_q [max_batch_size*beam_size*hidden_size]*/,
+      _p_d_self_k_bgeem1[_layer_id]/*new_k*/, _p_d_self_v_bgeem1[_layer_id],/*new_v 作为v的cache1的2维数组[n_dec_layer,[max_batch_size*beam_size*head_num*max_step*dim_per_head]] _p_d_self_k_bgeem1 也类似*/
       _tw._head_num, _tw._dim_per_head, _tw._max_step, _cur_step,
       _max_thread_per_block);
 
@@ -540,7 +540,7 @@ void Decoder<OpType_>::self_attention() {
   /* ---step 2. correlation = q * k, perform softmax on correlation--- */
   CHECK_GPU_ERROR(cublasGemmStridedBatchedEx(//BTBT 沿headsOfCurrentStep的轴线,按head计算当前step的q与之前step(含当前)的k的点积分数
       _hd, CUBLAS_OP_T, CUBLAS_OP_N, _cur_step + 1, 1, _tw._dim_per_head,  //??? 这里CUBLAS_OP_T和CUBLAS_OP_N的影响貌似正相反?是column-major的影响?
-      &_atten_scaler, _p_d_self_k_bgeem1[_layer_id]/*xbatchSz*beamSz*headNum*xstep*dimHead */, _AType, _tw._dim_per_head,
+      &_atten_scaler, _p_d_self_k_bgeem1[_layer_id]/*xbatchSz*beamSz*headNum*xstep*dimHead */, _AType, _tw._dim_per_head/*由于A是CUBLAS_OP_T所以lda是行*/,
       _tw._max_step * _tw._dim_per_head, _p_d_query_buf1/*xbatchSz*beamSz*hidSz */, _BType,
       _tw._dim_per_head, _tw._dim_per_head, &_type_zero, _p_d_c/*xbatchSz*beamSz*headNum*xstep */, _CType,
       _cur_step + 1, _cur_step + 1, (_step_token_num * _tw._head_num)/*batchCount=(batchSz*beamSz)*headNum=>headsOfStep */,
@@ -555,7 +555,7 @@ void Decoder<OpType_>::self_attention() {
 #endif
 
   /* ---step 3. new_q = correlation * v--- */
-  CHECK_GPU_ERROR(cublasGemmStridedBatchedEx(//BTBT 沿headsOfCurrentStep的轴线,按head计算当前step的新q值,correlation * v的计算均涉及当前和历史step
+  CHECK_GPU_ERROR(cublasGemmStridedBatchedEx(//BTBT 沿headsOfCurrentStep的轴线,按head计算当前step的新q值,correlation * v的计算均涉及当前和历史step BTBT TOREFACTOR ??? cbls貌似有专门矩阵与向量乘法的API吧,
       _hd, CUBLAS_OP_N, CUBLAS_OP_N, _tw._dim_per_head, 1, _cur_step + 1,
       &_type_one, _p_d_self_v_bgeem1[_layer_id]/*xbatchSz*beamSz*headNum*xstep*dimHead */, _AType, _tw._dim_per_head,
       _tw._max_step * _tw._dim_per_head, _p_d_c/*xbatchSz*beamSz*headNum*xstep */, _BType, _cur_step + 1,
@@ -605,20 +605,20 @@ void Decoder<OpType_>::encdec_attention() {
   /* ---step 1. new_q = ori_q * q_wei + bias, reshape new_q for multi-head
    * gemm--- */
   CHECK_GPU_ERROR(cublasGemmEx(
-      _hd, CUBLAS_OP_N, CUBLAS_OP_N, _tw._hidden_size, _step_token_num,
+      _hd, CUBLAS_OP_N, CUBLAS_OP_N, _tw._hidden_size, _step_token_num/*batchSz*beamSz*/,
       _tw._hidden_size, &_type_one, _p_d_dec_wei[_weight_offset + 8]/*encdec_project_kernel_q*/, _AType,
       _tw._hidden_size, _p_d_query_buf1, _BType, _tw._hidden_size, &_type_zero,
       _p_d_query_buf2, _CType, _tw._hidden_size, _computeType,
       CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-  ker_arrange_encdec_q_launcher<_DataType>(
-      _step_token_num, _tw._hidden_size, _stream, _p_d_query_buf2/*in:ori_q*/,
+  ker_arrange_encdec_q_launcher<_DataType>(//reshape ori_q[batch_size,beam_size,hidden_size] into new_q[batch_size,head_num,beam_size,dim_per_head] and add bias
+      _step_token_num, _tw._hidden_size, _stream, _p_d_query_buf2/*in:ori_q[_hidden_size,_step_token_num]*/,
       _p_d_dec_wei[_weight_offset + 9]/*encdec_project_bias_q*/, _p_d_query_buf1/*out:new_q*/, _tw._beam_size,
       _tw._dim_per_head, _tw._head_num, _max_thread_per_block);
 
   /* ---step 2. correlation = q * k, perform softmax on correlation--- */
-  CHECK_GPU_ERROR(cublasGemmStridedBatchedEx(
+  CHECK_GPU_ERROR(cublasGemmStridedBatchedEx(//BTBT ??? 为什么不能按selfAttn的方法做batchGemm,而是要先arrange q呢?因为若按selfAttn的做法,因kv已经在 project_encoder_output 中做过arrange了,q不做arrange的话,则m=_batch_seq_len,n=1,k=_dim_per_head,aStrd=batch_seq_len*dim_per_head,bStrd=dim_per_head,cStrd=batch_seq_len,batchCnt=_batch_size*_beam_size*_head_num,但这里问题来了,由于_p_d_encdec_k_bgeem[_layer_id](即k)没有beam的说法,但q中是有beam的且每个beam内再分head,那么A,B矩阵的batchCnt会对不上的,所以此时不得不对q先做arrange变成[batch_size,head_num,beam_size,dim_per_head],使得可以用以下形式做batchGemm
       _hd, CUBLAS_OP_T, CUBLAS_OP_N, _batch_seq_len, _tw._beam_size,
-      _tw._dim_per_head, &_atten_scaler, _p_d_encdec_k_bgeem[_layer_id], _AType,
+      _tw._dim_per_head, &_atten_scaler, _p_d_encdec_k_bgeem[_layer_id]/*[batch_size, head_num, batch_seq_len, dim_per_head] per layer*/, _AType,
       _tw._dim_per_head, _batch_seq_len * _tw._dim_per_head, _p_d_query_buf1,
       _BType, _tw._dim_per_head, _tw._beam_size * _tw._dim_per_head,
       &_type_zero, _p_d_c, _CType, _batch_seq_len,
@@ -631,7 +631,7 @@ void Decoder<OpType_>::encdec_attention() {
   /* ---step 3. new_q = correlation * v--- */
   CHECK_GPU_ERROR(cublasGemmStridedBatchedEx(
       _hd, CUBLAS_OP_N, CUBLAS_OP_N, _tw._dim_per_head, _tw._beam_size,
-      _batch_seq_len, &_type_one, _p_d_encdec_v_bgeem[_layer_id], _AType,
+      _batch_seq_len, &_type_one, _p_d_encdec_v_bgeem[_layer_id]/*[batch_size, head_num, batch_seq_len, dim_per_head] per layer*/, _AType,
       _tw._dim_per_head, _batch_seq_len * _tw._dim_per_head, _p_d_c, _BType,
       _batch_seq_len, _tw._beam_size * _batch_seq_len, &_type_zero,
       _p_d_query_buf1, _CType, _tw._dim_per_head,
@@ -653,7 +653,7 @@ void Decoder<OpType_>::encdec_attention() {
 }
 
 template <OperationType OpType_>
-void Decoder<OpType_>::ffn_add_norm() {
+void Decoder<OpType_>::ffn_add_norm() {//BTBT TOREFACTOR 用culs把该方法内除了LN的kernel都合成一个
   /* ---step 0. layer_norm, add output_bias to "query"--- */
   ker_norm_layer_resual_launcher<_DataType>(
       _step_token_num, _tw._hidden_size, _stream, _p_d_cur_step_query,
@@ -739,7 +739,7 @@ bool Decoder<OpType_>::beam_search() {
   update_new_seq_probs();
 
   /* ---step 2. sort the candidate with their probability--- */
-  CHECK_GPU_ERROR(cudaMemcpyAsync(&_h_can_num_batch, _p_d_can_num, sizeof(int),//BTBT _p_d_can_num指向的第一个数是该step该batch中所有beam所找到的topK候选人的总个数
+  CHECK_GPU_ERROR(cudaMemcpyAsync(&_h_can_num_batch, _p_d_can_num, sizeof(int),//BTBT _p_d_can_num指向的第一个数是该step该batch中所有beam所找到的topk候选人的总个数
                                   cudaMemcpyDeviceToHost, _stream));
   CHECK_GPU_ERROR(cudaStreamSynchronize(_stream));
   if (_tw._diverse_lambda != 0) {
@@ -750,7 +750,7 @@ bool Decoder<OpType_>::beam_search() {
           sizeof(float) * 8, _stream));
     } else {
       thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score, //https://thrust.github.io/doc/group__sorting_gaec4e3610a36062ee3e3d16607ce5ad80.html#gaec4e3610a36062ee3e3d16607ce5ad80
-                          _p_d_can_score + _h_can_num_batch, _p_d_can_idx,//_p_d_can_score作为key, _p_d_can_idx作为value, 从大到小排列
+                          _p_d_can_score + _h_can_num_batch, _p_d_can_idx,//_p_d_can_score 作为key, _p_d_can_idx 作为value, 从大到小排列,而由于在 select_beam_rough_topk 时对候选者的分数加上了beam信息'blockIdx.x * min_log_probability',所以这里会先按整batch的beamId进行排序,然后再对beam内各候选的分数进行排序,即不同beam的候选的分数排序是分开的
                           thrust::greater<float>());
     }
     ker_diverse_beam_search_launcher(_p_d_can_score, _p_d_can_idx, _p_d_can_num,
@@ -759,8 +759,8 @@ bool Decoder<OpType_>::beam_search() {
                                      _tw._diverse_lambda, _tw._trg_vocab_size);
   }
   
-  thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score,//BTBT 因在select_beam_rough_topk()中'batch_id * min_log_probability',所以这排序后batch_id(也就是该batch中各样本的顺序位置)不变,只是样本中的那几个beam对应的tkn id按score从大到小排序了
-                      _p_d_can_score + _h_can_num_batch, _p_d_can_idx, //BTBT 根据 _p_d_can_score 里的key对_p_d_can_idx 进行排序
+  thrust::sort_by_key(thrust::cuda::par.on(_stream), _p_d_can_score,//BTBT 因在select_beam_rough_topk()中加上了'batch_id * min_log_probability',所以这排序后batch_id(也就是该batch中各样本的顺序位置)不变,即按不同的样本内的所有beam的各候选tok混合后按分数大小排序,排序是按样本而非按beam分隔的
+                      _p_d_can_score + _h_can_num_batch, _p_d_can_idx, //BTBT 根据 _p_d_can_score 里的key对 _p_d_can_idx 进行排序,即_p_d_can_idx跟着_p_d_can_score同样排序
                       thrust::greater<float>()); // 排序方法API说明同上
 
 #ifdef DEBUG_RESULT
@@ -773,7 +773,7 @@ bool Decoder<OpType_>::beam_search() {
       based on sorted candidate.
       Deciding whether early stop based on num_finish_beam
   */
-  CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));//BTBT ??? 若diverse_lambda==0,每个beam只选择top1分数的候选
+  CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));//BTBT 这里是把_p_d_can_num[0]置零,用途变为'it will be use to decide whether early stop during beam_search'
   ker_refresh_result<<<dim3(_batch_size, _tw._beam_size), _tw._max_step, 0,
                        _stream>>>(
       _p_d_can_idx, _p_d_can_score, _p_d_can_num + 1, _p_d_alive_seq/*old_alive_seq*/,
@@ -833,17 +833,17 @@ Record the candidate's beam_id, vocab_id and probability
 */
 template <OperationType OpType_>
 void Decoder<OpType_>::update_new_seq_probs() {
-  CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));
+  CHECK_GPU_ERROR(cudaMemsetAsync(_p_d_can_num, 0, sizeof(int), _stream));//BTBT TOREFACTOR 知道了_p_d_can_num的长度范围后就不用置零了吧,或者在下面select_beam_rough_topk_launcher中置零也可以
 
-  select_beam_rough_topk_launcher(
-      _p_d_logit_buf, _p_d_trg_emb_wei[6]/*logit_bias*/, _p_d_alive_seq_probs,//???_p_d_alive_seq_probs和_p_d_alive_seq_score的作用与更新机制
-      _p_d_alive_seq_score, _p_d_alive_seq, _p_d_can_idx, _p_d_can_score,
-      _p_d_can_num, _tw._trg_vocab_size, _tw._max_step,
+  select_beam_rough_topk_launcher(//trfKernl.cu中根据beamSz调不同的select_beam_rough_topk具化函数
+      _p_d_logit_buf, _p_d_trg_emb_wei[6]/*logit_bias*/, _p_d_alive_seq_probs/*prefix sequence log probability[batch_size,beam_size]*/,//???_p_d_alive_seq_probs和_p_d_alive_seq_score的作用与更新机制
+      _p_d_alive_seq_score, _p_d_alive_seq/*prefix sequence id[batch_size,beam_size,max_step]*/, _p_d_can_idx/*topk candidate's index[batch_size, beam_size, vocab_size]*/, _p_d_can_score,
+      _p_d_can_num/*[1+batch_size*beam_size]*/, _tw._trg_vocab_size, _tw._max_step,
       _h_length_norm[_cur_step], _cur_step, _step_token_num,
       _max_thread_per_block, _stream, _tw._beam_size, _tw._diverse_lambda,
       _tw._end_id);
   thrust::exclusive_scan(thrust::cuda::par.on(_stream), _p_d_can_num + 1,  // https://thrust.github.io/doc/group__prefixsums_ga0f1b7e1931f6ccd83c67c8cfde7c8144.html#ga0f1b7e1931f6ccd83c67c8cfde7c8144 , https://www.cnblogs.com/carekee/articles/2409514.html
-                         _p_d_can_num + 1 + _step_token_num, _p_d_can_num + 1);//BTBT 原来_p_d_can_num保存了该batch每个beam的各个topK候选人总数,exclusive_scan后变成了从第一个beam开始累计的topK候选人,也就是可直接作为查_p_d_can_idx和_p_d_can_score中候选(topK)tkn id及其分数的下标 //BTBT REFACTOR ???这个貌似可以在select_beam_rough_topk_launcher()中同时做
+                         _p_d_can_num + 1 + _step_token_num, _p_d_can_num + 1);//BTBT 原来 _p_d_can_num 保存了该batch每个beam的各个topK候选人总数,exclusive_scan后变成了从第一个beam开始累计的 topk 候选人(前缀和),也就是可直接作为查 _p_d_can_idx 和 _p_d_can_score 中候选(topK)tkn id及其分数的下标 //BTBT REFACTOR ???这个貌似可以在 select_beam_rough_topk_launcher()中同时做
   return;
 }
 

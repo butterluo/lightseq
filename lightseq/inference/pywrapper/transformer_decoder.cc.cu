@@ -120,7 +120,7 @@ class TransformerDecoder {
     const float *encoder_output_data = encoder_out.data(0, 0, 0);
     const int *encoder_mask_data = encoder_mask_out.data(0, 0);
     std::vector<optraits::DataType> h_encoder_out(encoder_out.size());
-    for (auto i = 0; i < encoder_out.size(); i++) {
+    for (auto i = 0; i < encoder_out.size(); i++) {//BTBT TOREFACTOR 这种数据拷贝转换貌似可以优化?直接到pin memory???
       optraits::DataType data;
       if (decoder_optype == lightseq::cuda::OperationType::FP16) {
         data = __float2half_rn(encoder_output_data[i]);

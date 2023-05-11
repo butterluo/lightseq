@@ -69,8 +69,8 @@ class Decoder {
   float* _p_d_can_score;
   int* _p_d_can_idx;
   int* _p_d_can_num;
-  int* _p_d_alive_seq;/*初始化或生成的target tokn [max_batch_size*beam_size*max_step]初始值均为trg_start_id*/
-  int* _p_d_alive_seq_buf;
+  int* _p_d_alive_seq;/*初始化或生成的target tokn [max_batch_size*beam_size*max_step]在init_buffer()中通过start_id_vec初始化为trg_start_id*/
+  int* _p_d_alive_seq_buf;/*与上面的 _p_d_alive_seq 形成pingpong buf或双buf*/
   _DataType* _p_d_cur_step_query;/*GPU memory buffer to save "query",In all layers, using the same buffer,[max_batch_size*beam_size*hidden_size] */
   // cur step's projected query-key-value in self atten, one pointer for one
   // decoder layer device memory in [batch_size, beam_size, 3, hidden_size]
@@ -91,11 +91,11 @@ class Decoder {
   // key re-arrange for batch_geem in encdec atten, one pointer for one decoder
   // layer device memory in [batch_size, head_num, dim_per_head, batch_seq_len]
   // format
-  std::vector<_DataType*> _p_d_encdec_k_bgeem;/* 分层保持cros attn要到的由ecd out过来的k值,[batch_size, head_num, dim_per_head, batch_seq_len] */
+  std::vector<_DataType*> _p_d_encdec_k_bgeem;/* 分层保持cros attn要到的由ecd out过来的k值,[batch_size, head_num, batch_seq_len, dim_per_head] per layer */
   // value re-arrange for batch_geem in encdec atten, one pointer for one
   // decoder layer device memory in [batch_size, head_num, batch_seq_len,
   // dim_per_head] format
-  std::vector<_DataType*> _p_d_encdec_v_bgeem;/* 分层保持cros attn要到的由ecd out过来的v值,[batch_size, head_num, dim_per_head, batch_seq_len] */
+  std::vector<_DataType*> _p_d_encdec_v_bgeem;/* 分层保持cros attn要到的由ecd out过来的v值,[batch_size, head_num, batch_seq_len, dim_per_head] per layer */
   _DataType* _p_d_query_buf1;/* BTBT 用于attn的query buf [max_batch_size*beam_size*hidden_size] */
   _DataType* _p_d_query_buf2;/* BTBT 用于ffw的query buf [max_batch_size*beam_size*max(hidden_size, inner_size)] */
   _DataType* _p_d_c;/*BTBT correlation(attention score) buffer [max_batch_size*beam_size*head_num*max_step] */
@@ -121,8 +121,8 @@ class Decoder {
       _atten_scaler;          // scaling factor of Scaled Dot-Product Attention
   const float _logit_scaler;  // output scaling factor of the liner project
                               // after decoder
-  const long _layer_size_encdec_k;/*每层所需的由encd out得到的k矩阵的神经元个数:(max_batch_size * max_step * hidden_size)*/
-  const long _layer_size_self_k;/*(max_batch_size*max_step*hidden_size*beam_size)*/
+  const long _layer_size_encdec_k;/*每层所需的由encd out得到的k矩阵的最大神经元个数:(max_batch_size * max_step * hidden_size)*/
+  const long _layer_size_self_k;/*每层所需的由decd out得到的k矩阵的最大神经元个数:(max_batch_size*max_step*hidden_size*beam_size)*/
 
  public:
   Decoder(int max_batch_size, const int* p_d_padding_mask,

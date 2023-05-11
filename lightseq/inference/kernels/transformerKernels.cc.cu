@@ -19,20 +19,20 @@ rough topK candidate.
 
 @thread
 gridDim.x = batch_size * beam_size
-blockDim.x = max_thread_per_block
+blockDim.x = max_thread_per_block //BTBT 每个blk负责一个beam,而该blk的thread负责该beam下的一部分tkn(vocab中的tkn)
 
 @param
 logits: [batch_size, beam_size, vocab_size], cur step logit
 logit_bias: [vocab_size], logit bias
-seq_probs: [batch_size, beam_size], prefix sequence log probability
+seq_probs: [batch_size, beam_size], prefix sequence log probability BTBT _p_d_alive_seq_probs 在run_one_infer()中被 _h_alive_seq_probs 初始化为,除了第一个beam为0其它都是-1000
 seq_score: [batch_size, beam_size], prefix sequence score ??? 该方法貌似没用到该参数
-alive_seq: [batch_size, beam_size, max_step], prefix sequence id
-can_idx: [batch_size, beam_size, vocab_size], topk candidate's index
+alive_seq: [batch_size, beam_size, max_step], prefix sequence id BTBT _p_d_alive_seq 在init_buffer()中通过start_id_vec初始化为trg_start_id即target lang的startId(bos)
+can_idx: [batch_size, beam_size, vocab_size], topk candidate's index 输入的是 _p_d_can_idx
 can_score: [batch_size, beam_size, vocab_size], topk candidate's score
 num_beam_can: [1 + batch_size * beam_size].
     the first ele save the number of topk candidate of the whole batch
     the remaining batch_size * beam_size ele save the number of topk candidate
-    of each beam
+    of each beam//BTBT ??? 用这个数组保存候选个数,难道不同beam的候选个数还可以不一样?
 vocab_size: the vocab size of decoder
 max_step: max decode step
 length_norm: length penlty value for current step
@@ -45,7 +45,7 @@ __global__ void select_beam_rough_topk(
     const float* seq_score, const int* alive_seq, int* can_idx,
     float* can_score, int* num_beam_can, int vocab_size, int max_step,
     float length_norm, int cur_step, float diverse_lambda, int end_id) {
-  if (cur_step != 0 && alive_seq[blockIdx.x * max_step + cur_step] == end_id) {//alive_seq即_p_d_alive_seq,放的是上一步所选的该beam的最优候选人中的vocab_id. _p_d_alive_seq在上一步的ker_refresh_result()被设为_p_d_can_idx中最优候选人的vocab_id
+  if (cur_step != 0 && alive_seq[blockIdx.x * max_step + cur_step] == end_id) {//alive_seq即 _p_d_alive_seq,放的是历史step上所选的该beam的最优候选人中的vocab_id. _p_d_alive_seq在上step的beam_search()/ker_refresh_result()被设为 _p_d_can_idx 中最优候选人的vocab_id
     // this is a finished beam
     if (threadIdx.x == 0) {
       num_beam_can[blockIdx.x + 1] = 1;      // generate one candidate
@@ -67,15 +67,15 @@ __global__ void select_beam_rough_topk(
   /* step1: compute each thread's max_logit and sum_exp_logit, store in
    * rough_top_kth_logit, sum_exp_logit */
   const int block_start = blockIdx.x * vocab_size;
-  const int left_idx = block_start + threadIdx.x;//每个blk负责一个beam,而该blk的thread负责该beam下的每个tkn(vocab中的tkn)
-  const int right_idx = (blockIdx.x + 1) * vocab_size;
+  const int left_idx = block_start + threadIdx.x;//本thr所负责的数据在batchSz*beamSz*vocabSz中的起点
+  const int right_idx = (blockIdx.x + 1) * vocab_size;//该thr所负责的数据的边界
   float rough_top_kth_logit = CUDA_FLOAT_INF_NEG;
   float sum_exp_logit = 0;
-  for (int i = left_idx; i < right_idx; i += blockDim.x) {
-    float lgt = (float)logits[i] + (float)__ldg(&logit_bias[i - block_start]);//把logit的bias加上,//BTBT REFACTOR 由于该bias后续会用到,放在寄存器中会快些
-    rough_top_kth_logit = fmaxf(rough_top_kth_logit, lgt);
+  for (int i = left_idx; i < right_idx; i += blockDim.x) {//该thr循环所负责的数据时的步长是blockDim.x=max_thread_per_block
+    float lgt = (float)logits[i] + (float)__ldg(&logit_bias[i - block_start]);//把logit的bias加上,//BTBT TOREFACTOR 由于该bias后续会用到,放在寄存器中会快些
+    rough_top_kth_logit = fmaxf(rough_top_kth_logit, lgt);//计算本thr负责范围内的最大logit
   }
-  float max_logit = blockReduceMax(rough_top_kth_logit);
+  float max_logit = blockReduceMax(rough_top_kth_logit);//max_logit=本blk所负责的beam的最大logit,rough_top_kth_logit=计算本thr负责范围内的最大logit
   __shared__ float s_max_logit;
   if (threadIdx.x == 0) {
     s_max_logit = max_logit;
@@ -85,7 +85,7 @@ __global__ void select_beam_rough_topk(
     float lgt =
         fmaxf((float)(logits[i]) + (float)__ldg(&logit_bias[i - block_start]) -
                   s_max_logit,
-              logit_thresh_min);
+              logit_thresh_min);//BTBT TOREFACTOR 计算sftMx的分母时,使用了thresh取代一些过小值,使得计算更稳定,比ft好. 但其实如果真实值被thresh的话,其实exp(thresh)也可以作为一个常量缓存起来,这个没做好
     sum_exp_logit += expf(lgt);
   }
 
@@ -97,11 +97,11 @@ __global__ void select_beam_rough_topk(
   __shared__ float
       s_log_prob_base;      // prefix sequence log prob - log_sum_exp_logit
   __shared__ float s_topk;  // rough top k-th value of logits
-  __shared__ int num_cur_beam_can;  // candidate number for this beam
-  sum_exp_logit = blockReduceSum(sum_exp_logit);
-  rough_top_kth_logit = blockRoughTopK<float, beam_size>(rough_top_kth_logit);//??? 每个blk负责一个样本的一个beam,每个beam又有topK?beam不就已经是topK的概念了么?
+  __shared__ int num_cur_beam_can;  // candidate number for this blk(beam)
+  sum_exp_logit = blockReduceSum(sum_exp_logit);//BTBT 计算sftMx分母中求和部分
+  rough_top_kth_logit = blockRoughTopK<float, beam_size>(rough_top_kth_logit);//??? 每个blk负责一个样本的一个beam,每个beam又有topK?beam不就已经是topK的概念了么? 这是求 topk 的logit的下界,即如果 logit 高于这个rough_top_kth_logit就大约相当是topk范围内了
   if (threadIdx.x == 0) {
-    s_log_prob_base = seq_probs[blockIdx.x] - logf(sum_exp_logit) - s_max_logit;// _p_d_alive_seq_probs初始值在batch中每样本的第一个beam处是0其它是-1000,使得每个样本刚开始默认选beam[0]做result.这里加上seq_probs[blockIdx.x]是为了每step的prob会累加,最后所有step的累加作为该beam的分数. 而s_log_prob_base在下面的(lgt + s_log_prob_base)处计算了logSoftMax分数//BTBT ???但下面计算时lgt没取log,貌似不大对,但也没出啥问题
+    s_log_prob_base = (seq_probs[blockIdx.x] - s_max_logit) - logf(sum_exp_logit);// _p_d_alive_seq_probs初始值在batch中每样本的第一个beam处是0其它是-1000,使得每个样本刚开始默认选beam[0]做result.这里加上seq_probs[blockIdx.x]是为了每step的prob会累加,最后所有step的累加作为该beam的分数. 而s_log_prob_base在下面的(lgt + s_log_prob_base)处计算了logSoftMax分数//BTBT ?*?但下面计算时lgt没取log,貌似不大对,但也没出啥问题,不用取log, 因logf()其实就是log_e,而sftMx的分子是exp(x),因此log_e(exp(x))==x,ft其实也没对分子部分取log
     s_topk = rough_top_kth_logit;
     num_cur_beam_can = 0;
   }
@@ -111,40 +111,40 @@ __global__ void select_beam_rough_topk(
           compute the seq probability ended with them,
       save the probability, token_index, selected token number.
   */
-  int idx = left_idx;
+  int idx = left_idx;//block_start(即blockIdx.x * vocab_size) + threadIdx.x;//本thr所负责的数据在batchSz*beamSz*vocabSz中的起点
   int batch_id = blockIdx.x / beam_size;
-  int batch_start_pos = batch_id * beam_size * vocab_size;//BTBT batch_start_pos是该thread所属的batch中某样本(tkn)的开端,而block_start是该thread所属的batch中某样本(tkn)的某beam的开端
+  int batch_start_pos = batch_id * beam_size * vocab_size;//BTBT batch_start_pos 是本blk(对应一个beam)所属的example在batch(batchSz*beamSz*vocabSz)中的开端指针,而 block_start 是本blk所负责的beam在所有beam中的开端指针
   // int unk_vocab_id = vocab_size - 3;  // last three element: unk, start, eos
   __shared__ int l_n;  // current iteration candidate number
   for (int iter = 0; iter < (vocab_size + blockDim.x - 1) / blockDim.x;
-       iter++) {
+       iter++) {//切记一个迭代是一个blk内所有thr同时做的
     // zero the counter
     if (threadIdx.x == 0) l_n = 0;
     __syncthreads();
 
     float lgt = CUDA_FLOAT_INF_NEG - 1.f;  // min s_topk is CUDA_FLOAT_INF_NEG
-    int pos;//BTBT最终会保存该thread在该次iter中找到odetopK候选人在整个batch中的下标,见下.
+    int pos;//BTBT 最终会保存该thread在该次iter中找到 odetopk 候选人在整个batch中的下标,见下.
     int vocab_id = idx - block_start;
 
     // if ((vocab_id < vocab_size) && (vocab_id != unk_vocab_id)) {
     if (vocab_id < vocab_size) {
-      lgt = (float)(logits[idx]) + (float)__ldg(&logit_bias[vocab_id]);
+      lgt = (float)(logits[idx]) + (float)__ldg(&logit_bias[vocab_id]);//BTBT TOREFACTOR 这行功能出现了很多次,最好缓存在寄存器吧,另外,每次出现时的logit及其bias的含义和下标要一致才能缓存在寄存器,像这次循环和上两次循环的下标含义不一致的,貌似也可以掰成一致的吧
       if (lgt >= s_topk)
         // pos: relative pos inside this iteration
         pos = atomicAdd(&l_n, 1);//atomicAdd返回的是l_n的旧值,新值在加操作后直接保存在l_n中,所以此时pos中是该次加操作前的l_n
-    }//BTBT 此时pos中放的是该thread该iter找到topk候选人时的上一次的所在beam(一个blk负责一个beam)的已找到的topK候选人个数.一般这种含义的值可作为topK候选人在整个beam(blk)的下标.
+    }//BTBT 此时pos中放的是本thr本iter找到topk候选人时的上一次所在blk(一个blk负责一个beam)中任意thr找到的topk候选人时的候选人个数.一般这种含义的值可作为topk候选人在整个beam(blk)的下标.
     __syncthreads();
 
     // leader increments the global counter
     if (threadIdx.x == 0) {
-      atomicAdd(&num_cur_beam_can, l_n);
-      l_n = atomicAdd(num_beam_can, l_n);//atomicAdd返回的是num_beam_can的旧值,新值在加操作后直接保存在num_beam_can中,所以此时l_n中是该次加操作前的num_beam_can
-    }//BTBT 此时l_n中放的是该batch上一次iter所统计的batch中各beam已找到的topK 候选总数; num_beam_can[0]中放的是该次iter统计的batch中各beam已找到的topk候选总数
+      atomicAdd(&num_cur_beam_can, l_n);//BTBT 此时l_n中放的是本blk(对应一个beam)在本iter在上一个 __syncthreads 时已找到的 topk 候选总数(因l_n在每次iter开头都会置零);num_cur_beam_can则是截止到本iter整blk找到的topk候选的累积总数.
+      l_n = atomicAdd(num_beam_can, l_n);//num_beam_can[0]中放的是截止到本blk本iter累计的 batch 中各beam已找到的 topk 候选总数,atomicAdd返回给l_n的是num_beam_can的旧值,即此时l_n中是该次atomicAdd操作前的num_beam_can[0],跟上面l_n的值不一样了
+    }
     __syncthreads();
 
     // threads with true predicates write their elements
     if ((lgt >= s_topk)) {
-      pos += l_n;  // increment local pos by global counter//BTBT 此时pos中放的是该batch该iter找到的topk候选人属于该batch的所有beam的总topK候选人中的第几个.一般这种含义的值可作为topK候选人在整个batch中的下标.
+      pos += l_n;  // increment local pos by global counter//BTBT 此时pos中放的是本blk本iter找到的topk候选人属于整batch的所有beam的总topk候选人中的第几个.一般这种含义的值可作为topk候选人在整个batch中的下标. 累加和做下标.
       if (diverse_lambda == 0) {//???
         can_score[pos] = fmaxf((lgt + s_log_prob_base) * length_norm,//length_penalty>=0才生效,length_norm会随着step的增加而变小,length_penalty越大变小的幅度越大. 进而该step对应的候选tkn的分数也会变小,进而迫使生成短文本
                                min_log_probability + 1.f) +
@@ -154,13 +154,13 @@ __global__ void select_beam_rough_topk(
                                min_log_probability + 1.f) +
                          blockIdx.x * min_log_probability;
       }
-      can_idx[pos] = idx - batch_start_pos;//BTBT p_d_can_idx存放了该batch_id对应的'can_beam_id * vocab_size + vocab_id',其中can_beam_id是指该batch某样本(tkn)中的第几个beam
-    }
+      can_idx[pos] = idx - batch_start_pos;//BTBT can_idx即 p_d_can_idx,作为下标的pos如前所述,表示了batch中的第几个topk候选,而对应的值则是该topk候选在所属的example(beamSz*vocabSz)中该候选的tokId的位置(即tokId+beamNumInExample*vocabSz),因后面有一句'idx += blockDim.x'. 所以后续可以通过该值反推出该候选对应的tok和beam
+    }//can_score[pos]存放的是上面 can_idx 下标对应的topk候选的累计prob
     __syncthreads();
     idx += blockDim.x;
   }
   if (threadIdx.x == 0) {
-    num_beam_can[blockIdx.x + 1] = num_cur_beam_can;//BTBT 保存了该batch在该step时各个beam分别找到了多少topK候选人,然后用这些数值作为下标,去can_idx,can_score找对应的tkn id及其分数
+    num_beam_can[blockIdx.x + 1] = num_cur_beam_can;//BTBT 保存了该batch在该step时各个example的各个beam分别找到了多少topK候选人,后续会用这些数值作为下标,去can_idx,can_score找对应的tokId及其累计prob
   }
 }
 
@@ -169,10 +169,10 @@ void select_beam_rough_topk_launcher(
     const T* logits, const T* logit_bias, const float* seq_probs,
     const float* seq_score, const int* alive_seq, int* can_idx,
     float* can_score, int* num_beam_can, int vocab_size, int max_step,
-    float length_norm, int cur_step, int step_token_num,
+    float length_norm, int cur_step, int step_token_num/*batch_size*beam_size*/,
     int max_thread_per_block, cudaStream_t stream, int beam_size,
     float diverse_lambda, int end_id) {
-  if (beam_size == 1)
+  if (beam_size == 1)//BTBT TOREFACTOR grid和blk好歹根据batchSz/beamSz之类的调一下吧
     select_beam_rough_topk<T, 1>
         <<<step_token_num, max_thread_per_block, 0, stream>>>(
             logits, logit_bias, seq_probs, seq_score, alive_seq, can_idx,
@@ -236,7 +236,7 @@ blockDim.x = max_thread_per_block
 
 @param
 can_score: [batch_size * beam_size * candidates_size] candidates_size is
-dynamic
+dynamic (由于用了 blockRoughTopK 所以每个beam的所谓 topk 候选个数其实并不一定是k)
 can_ids: [batch_size * beam_size * candidates_size]
 num_beam_can: [1 + batch_size * beam_size]
 */
@@ -245,23 +245,23 @@ __global__ void ker_diverse_beam_search(float* can_score, int* can_ids,
                                         float diverse_lambda, int vocab_size) {
   int total_candidates = num_beam_can[0];
   num_beam_can += 1;
-  int can_pos = num_beam_can[blockIdx.x];
-  int batch_id = blockIdx.x / beam_size;
-  int beam_score_left_idx = can_pos + threadIdx.x;//BTBT REFACTOR 这里threadIdx.x稍微大点,就会导致beam_score_left_idx>right_idx,这样max_thread_per_block=1024个thread中会浪费很多thread啊
+  int can_pos = num_beam_can[blockIdx.x];//某beam的候选个数的前缀和
+  int batch_id = blockIdx.x / beam_size;//exampleId
+  int beam_score_left_idx = can_pos + threadIdx.x;//BTBT TOREFACTOR 这里threadIdx.x稍微大点,就会导致beam_score_left_idx>right_idx,而由于一个blk一个beam且beam的topk候选不会太多,这样max_thread_per_block=1024个thread中会浪费很多thread(站茅坑不拉屎那种)
   int beam_score_right_idx = blockIdx.x == (gridDim.x - 1)
                                  ? total_candidates
                                  : num_beam_can[blockIdx.x + 1];
   for (int idx = beam_score_left_idx; idx < beam_score_right_idx;
        idx += blockDim.x) {
     atomicAdd(can_score + idx, batch_id * min_log_probability -
-                                   min_log_probability * blockIdx.x - //BTBT 把can_score在select_beam_rough_topk时按beam_id(blockIdx.x)分隔的改成按batch_id(样本)分隔
-                                   diverse_lambda * (idx - can_pos + 1));//BTBT 原来的分数按该候选人在该beam中原由大到小的排名(idx-can_pos)做惩罚,因子为diverse_lambda, diverse_lambda越大排名间分数的距离就越大,这使得该beam中排第一的tkn在混合beam排名后依然接近第一
-    int ori_can_idx = can_ids[idx];  // can_beam_id * vocab_size + vocab_id
-    int can_beam_id = ori_can_idx / vocab_size;
-    int can_vocab_id = ori_can_idx % vocab_size;
-    can_ids[idx] =//BTBT 原分数基于排名做惩罚后,再把分数对应到某batch_id(样本)的不同rank上,然后在can_ids中加入基于样本的beam信息与rank信息.这个rank是指多个beam中的排名处于不同位置的候选can,比如4个beam中均排第0位的4个can会分到rank0(见下面的'(idx - can_pos) * beam_size',这里的beam_size作为can size或rank size用)
-        (can_beam_id + (idx - can_pos) * beam_size) * vocab_size + can_vocab_id;//在select_beam_rough_topk中只是把分数对应到样本的beam_id中(也就是can_beam_id),并无排名信息.所谓,can_beam_id其实就是一个样本中的第几个beam,比如某样本的第一个beam的can_beam_id就是0,它是基于样本内的beam个数的,而不是batch内的beam总数
-  }//BTBT 上述can_ids中包含的can_beam_id和rank信息会在ker_refresh_result中选择最终beam的tkn id时会被反解码出来
+                                   min_log_probability * blockIdx.x - //BTBT 把can_score在 select_beam_rough_topk 时按 beam_id(blockIdx.x) 分隔的改成按 exampleId(batch_id)分隔
+                                   diverse_lambda * (idx - can_pos + 1));//BTBT 分数在beam_search().'if (_tw._diverse_lambda != 0)'时已经按该候选人在各beam中按分数由大到小排序.故这里按每beam中候选人的排名(idx-can_pos)做惩罚,因子为diverse_lambda, diverse_lambda越大同一beam不同排名候选者间分数的距离就越大,这使得某beam中排第一的候选在混合beam排名后能够靠前,即beam 3的第一名也有可能排到beam 1的槽位中去,而不是beam 1的各名次总是占据beam 1的所有槽位,这样就可以增加多样性,把beam3的得分较高的预测值也往上推
+    int ori_can_idx = can_ids[idx];  // 候选所属的beamIdOfAExample * vocab_size + 候选的tokId
+    int can_beam_id = ori_can_idx / vocab_size; // 候选所属的beamIdOfAExample,即属于某样本的第几个beam(前继beam)
+    int can_vocab_id = ori_can_idx % vocab_size;//候选对应的tokId
+    can_ids[idx] =
+        (can_beam_id/*该候选所属的前继beam*/ + (idx - can_pos)/*该候选在前继beam(can_beam_id)中的排名*/ * beam_size) * vocab_size + can_vocab_id;//BTBT 这行的作用其实就是把该候选的:前继beam以及在前继beam中的排名,还有对应的tokId编码到一个值中,至于编码过程用的是'*beam_size'还是'*vocab_size'其实并不重要,只要是两个不相同的数就可以
+  }//BTBT 上述can_ids中包含的前继beam(can_beam_id)和候选在前继beam的排名()idx - can_pos信息会在 ker_refresh_result 中选择最终beam的tokId(即next step的beam的输入tokId)时会被反解码出来
 }
 
 void ker_diverse_beam_search_launcher(float* can_score, int* can_ids,
@@ -1310,18 +1310,18 @@ gridDim.y = beam_size
 blockDim.x = max_step
 
 @param
-can_idx: [none], no certain length, determined by rough candidate number
+can_idx: [none], no certain length, determined by rough candidate number 输入 _p_d_can_idx
 can_score: [none], no certain length, determined by rough candidate number
 num_can_per_beam: [batch_size * beam_size]
     save exclusive_scan_sum of the beam candidate number array
-    e.g. [0,2,5,1] -> [0, 0, 2, 7]
+    e.g. [0,2,5,1] -> [0, 0, 2, 7] //输入的是 _p_d_can_num
 old_alive_seq: [batch_size, beam_size, max_step]
 new_alive_seq: [batch_size, beam_size, max_step]
-seq_probs: [batch_size, beam_size]
-seq_score: [batch_size, beam_size]
+seq_probs: [batch_size, beam_size] 输入 _p_d_alive_seq_probs
+seq_score: [batch_size, beam_size] 输入 _p_d_alive_seq_score
     performing length penlty on seq_probs will get seq_probs
 num_finish_beam: record current finished beam.
-    it will be use to decide whether early stop during beam_search
+    it will be use to decide whether early stop during beam_search 输入置零后的 _p_d_can_num[0]
 vocab_size: target vocabulary size
 cur_step: current step
 length_norm: length penlty norm value
@@ -1334,30 +1334,30 @@ __global__ void ker_refresh_result(const int* can_idx, const float* can_score,
                                    int cur_step, float length_norm,
                                    float diverse_lambda, int end_id) {
   // step1 update alive_seq
-  int can_pos = num_can_per_beam[blockIdx.x * gridDim.y] + blockIdx.y;//BTBT 一个beam有多个候选人(can),但由于beam_search()中通过sort_by_key按分由大到小排序,所以batch中每个样本的头位置对应的就是该样本得分最大的那个候选人,然后由大到小排,这里can_pos是指对应排名的候选人在can_idx中的位置,而这个位置的候选人并不一定属于blockIdx.y所指向的beamId,其真实beamId被编码在从can_idx[can_pos]获取到的idx中
-  int ori_can_idx = can_idx[can_pos];  // can_beam_id * vocab_size + vocab_id //其实是找该样本的beamSz个最大的候选人,而这些候选人有可能来自同一个beam
-  int can_beam_id = ori_can_idx / vocab_size;//该样本排名第blockIdx.y个候选人的真实beamId
-  int can_vocab_id = ori_can_idx % vocab_size;
+  int can_pos = num_can_per_beam[blockIdx.x * gridDim.y] + blockIdx.y;//BTBT 一个beam有多个候选人(can),但can_idx进入该kernel前在beam_search()中已经按不同样本内的分数由大到小排序(即按样本分隔去排序),所以batch中每个样本的头位置对应的就是该样本得分最大的那个候选人,然后由大到小排,这里can_pos是指对应排名的候选人在can_idx中的位置,即blkIdx.x对应的样本中混合所有前继beam候选tok排序后,分数由大到小排在第blockIdx.y位置的那个候选tok.也可把blkIdx.y对应的beamId理解为下一step的beamId的槽位
+  int ori_can_idx = can_idx[can_pos];  //如上注释,can_pos这个候选tok对应的ori_can_idx值,可能是编码了前继beamId,tokId以及原本在前继beam的排名的,下面就算要解码这些信息
+  int can_beam_id = ori_can_idx / vocab_size;//diverse_lambda==0时该候选tok所属的前继beam
+  int can_vocab_id = ori_can_idx % vocab_size;//本step的候选tok对应的tokId
   int rank_id;
   if (diverse_lambda != 0) {
-    rank_id = can_beam_id / gridDim.y;  // rank in each beam
-    can_beam_id %= gridDim.y;
+    rank_id = can_beam_id / gridDim.y;  // rank in each beam//diverse_lambda != 0时该候选tok在前继beam中的排名
+    can_beam_id %= gridDim.y;//diverse_lambda != 0时该候选tok的所属前继beam
   }
   int thread_vocab_id;
   if (threadIdx.x > cur_step + 1) {
-    thread_vocab_id = end_id;
+    thread_vocab_id = end_id;//如果本thr已经超出了正在处理的step范围,就补end_id
   } else if (threadIdx.x == cur_step + 1) {
-    // add current step generate vocabulary id
+    // add current step generate vocabulary id 下一step的blkIdx.x的样本中blkIdx.y对应的beam槽位,应该填can_vocab_id这个候选tokId
     thread_vocab_id = can_vocab_id;
   } else {
-    // threadIdx.x <= cur_step
+    // threadIdx.x <= cur_step 如果是以前的step,则把老的历史step的各样本各beam已输入的tokId复制到new_alive_seq中
     thread_vocab_id = old_alive_seq[targetid_3dim(
-        blockIdx.x, can_beam_id, threadIdx.x, gridDim.y, blockDim.x)];//can_beam_id是排名在blockIdx.y位的候选人的所属beamId,这里是拿到这个topk候选人的历史step上的vocabId,然后复制到第blockIdx.y个beam上,使得该样本的所有beam的seq分数都是按大到小排序
+        blockIdx.x, can_beam_id, threadIdx.x, gridDim.y, blockDim.x)];
   }
   new_alive_seq[targetid_3dim(blockIdx.x, blockIdx.y, threadIdx.x, gridDim.y,
                               blockDim.x)] = thread_vocab_id;
 
-  // step2 update seq_probs if alive seq when not eos
+  // step2 update seq_probs if alive seq when not eos(EndOfSentence即end_id)
   if (cur_step == 0 || can_vocab_id != end_id) {
     // alive seq
     if (threadIdx.x == 0) {
@@ -1368,7 +1368,7 @@ __global__ void ker_refresh_result(const int* can_idx, const float* can_score,
       } else {
         seq_probs[blockIdx.x * gridDim.y + blockIdx.y] =
             (can_score[can_pos] - blockIdx.x * min_log_probability +
-             diverse_lambda * (rank_id + 1)) / //BTBT 如果是按排名对原分数做了惩罚的话,要按照从can_idx中解码出来的rank把分数还原回去,原来没做任何分隔,len_norm(避免过长),排名惩罚(避免多样性不足)之前的分数,作为所选的tkn id对应的概率
+             diverse_lambda * (rank_id + 1)) / //BTBT 若diverse_lambda!=0 则之前会在 ker_diverse_beam_search 会按候选在前继beam中的排名对分数做了惩罚以拉开距离,增加多样性,因此现在要结合从can_idx中解码出来的rank_id(在前继beam中的排名)把分数还原回到原来没做任何分隔没做len_norm(避免过长)没做diverse_lambda(避免多样性不足)的分数(累计prob),作为所选的tokId对应的累计prob
             length_norm;
       }
     }
@@ -1404,7 +1404,7 @@ blockDim.x = max_thread_per_block
 
 @param
 num_can_per_beam: [batch_size, beam_size]
-can_idx: [none], no certain length, determined by rough candidate number
+can_idx: [batch_size * beam_size * candidates_size] candidates_size is dynamic, 输入 _p_d_can_idx
 self_k_bgeem: [batch_size, beam_size, head_num, max_step, dim_per_head] *
     decoder_layer_num
 self_v_bgeem: [batch_size, beam_size, head_num, max_step, dim_per_head] *
@@ -1413,7 +1413,7 @@ new_self_k_bgeem: [batch_size, beam_size, head_num, max_step, dim_per_head] *
     decoder_layer_num
 new_self_v_bgeem: [batch_size, beam_size, head_num, max_step, dim_per_head] *
     decoder_layer_num
-self_k_bgeem_offset = max_batch_size * max_step * hidden_size * beam_size
+self_k_bgeem_offset = max_batch_size * max_step * hidden_size * beam_size 输入 _layer_size_self_k
 beam_size : beam size for beam_search
 dim_per_head: dim of one head in multi-head attention
 head_num: head number in multi-head attention
@@ -1432,7 +1432,7 @@ __global__ void ker_refresh_cache(const int* num_can_per_beam,
   int layer_id = blockIdx.x / (cur_step + 1);
   int step_id = blockIdx.x % (cur_step + 1);
   int kv_id = blockIdx.y & 1;//BTBT MAYBUG ??? 模2(因2-1=1),但这种求模方法要求blockIdx.y为2次幂吧 //kv_id表示是k还是v
-  int beam_id_global = blockIdx.y >> 1;
+  int beam_id_global = blockIdx.y >> 1;//beam在batch中的beamId
   int batch_id = beam_id_global / beam_size;
   int beam_id = beam_id_global % beam_size;
   int hidden_size = dim_per_head * head_num;
@@ -1444,7 +1444,7 @@ __global__ void ker_refresh_cache(const int* num_can_per_beam,
     int can_beam_id =
         can_idx[can_pos] / vocab_size;  // can_beam_id * vocab_size + vocab_id
     if (diverse) can_beam_id %= beam_size;
-    if (can_idx[can_pos] % vocab_size == end_id) {//BTBT REFACTOR 这个if是否上移到can_pos赋值时,以免return前无谓的计算
+    if (can_idx[can_pos] % vocab_size == end_id) {//BTBT TOREFACTOR 这个if是否上移到can_pos赋值时,以免return前无谓的计算
       return;
     }
 

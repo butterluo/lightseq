@@ -45,8 +45,8 @@ class FeedForward {
                 T *inp_grad_out = nullptr, T *out_grad_trans_out = nullptr,
                 bool compute_bias = true) {
     float alpha = (T)1.0, beta = (T)0.0;
-    cublas_gemm_ex(_cublasHandle, CUBLAS_OP_N, CUBLAS_OP_T, config_.inputSize,
-                   config_.outputSize, bsz, &alpha, &beta, input_ptr, out_grad,
+    cublas_gemm_ex(_cublasHandle, CUBLAS_OP_N, CUBLAS_OP_T, config_.inputSize/*m*/,
+                   config_.outputSize/*n*/, bsz/*k*/, &alpha, &beta, input_ptr, out_grad,
                    weights_grad, cublasGemmAlgo_t(config_.gemm_algos[1]));
 
     cublas_gemm_ex(_cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N, config_.inputSize,

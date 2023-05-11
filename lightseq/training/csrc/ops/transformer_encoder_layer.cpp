@@ -73,7 +73,7 @@ void TransformerEncoderLayer<T>::attn_layer_fw(const T *input_ptr,
                                      _batch_size, _seq_len, 3, _heads,
                                      _hidden_size / _heads, _stream);
 
-  // attention scores, q*k
+  // attention scores, q*k //BTBT 做BatchGemm: num_steps=_batch_heads=batchSz*heads,A=k_tf_ptr[batchSz*heads*seqlen,headDim],StrideA=seqlen*headDim,B=q_tf_ptr[batchSz*heads*seqlen,headDim],StrideB=seqlen*headDim,C=q_tf_ptr[batchSz*heads*seqlen,seqlen],StrideC=seqlen*seqlen
   _attn_scores.Forward(_batch_heads, _soft_out_ptr, k_tf_ptr, q_tf_ptr,
                        _cublasHandle);
 
